@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Fake curl for tests: logs each call (argv) to $FAKE_CURL_LOG, captures request bodies to
+# $FAKE_CURL_BODIES, and answers /api/auth/me with $FAKE_ME_CODE (default 200).
+log="${FAKE_CURL_LOG:-/dev/null}"
+printf '%s\n' "$*" >>"$log"
+out=""; wfmt=""; url=""; data=""; headers=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -w) wfmt="$2"; shift ;;
+    -H) headers+=("$2"); shift ;;
+    --data-binary) data="$2"; shift ;;
+    --data-urlencode|-X|-m) shift ;;
+    http*) url="$1" ;;
+  esac
+  shift
+done
+for h in "${headers[@]}"; do
+  case "$h" in @*) printf 'HEADERFILE %s\n' "$(cat "${h#@}")" >>"${FAKE_CURL_HEADERS:-/dev/null}" ;; esac
+done
+code=200; body='{}'
+case "$url" in
+  */api/auth/me) code="${FAKE_ME_CODE:-200}"; body='{"user":{"email":"dev@example.com"}}' ;;
+  */v1/events) code="${FAKE_EVENTS_CODE:-202}"; body='{"accepted":1}'
+    if [ "$data" = "@-" ]; then cat >>"${FAKE_CURL_BODIES:-/dev/null}"; printf '\n' >>"${FAKE_CURL_BODIES:-/dev/null}"; fi ;;
+  */v1/rules*) code="${FAKE_RULES_CODE:-204}"; body="${FAKE_RULES_BODY:-}" ;;
+esac
+if [ -n "$out" ]; then printf '%s' "$body" >"$out"; else printf '%s' "$body"; fi
+wfmt="${wfmt//\\n/$'\n'}"
+[ -n "$wfmt" ] && printf '%s' "${wfmt//%\{http_code\}/$code}"
+exit 0

@@ -1,0 +1,6 @@
+{
+  "type": "remote",
+  "url": "__NAWALA_MCP_URL__",
+  "oauth": false,
+  "headers": { "Authorization": "__NAWALA_AUTH__" }
+}

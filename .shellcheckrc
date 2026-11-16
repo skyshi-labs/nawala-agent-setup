@@ -1,0 +1,7 @@
+# SC2016: jq programs and literal $ in single quotes are intentional
+# SC2012: ls is only used to read file modes in tests
+# SC2088: a literal ~ in messages is display text, never a path
+# SC2018/SC2019: ASCII-only case folding of uuids is intended
+# SC2094: strip_block reads one file and appends to another (false positive)
+disable=SC2016,SC2012,SC2088,SC2018,SC2019,SC2094
+external-sources=true

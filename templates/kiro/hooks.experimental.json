@@ -1,0 +1,41 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "nawala-prompt",
+      "trigger": "UserPromptSubmit",
+      "action": {
+        "type": "command",
+        "command": "__NAWALA_HOOK__ prompt --agent kiro"
+      },
+      "timeout": 10
+    },
+    {
+      "name": "nawala-stop",
+      "trigger": "Stop",
+      "action": {
+        "type": "command",
+        "command": "__NAWALA_HOOK__ stop --agent kiro"
+      },
+      "timeout": 10
+    },
+    {
+      "name": "nawala-start",
+      "trigger": "SessionStart",
+      "action": {
+        "type": "command",
+        "command": "__NAWALA_HOOK__ start --agent kiro"
+      },
+      "timeout": 10
+    },
+    {
+      "name": "nawala-end",
+      "trigger": "SessionEnd",
+      "action": {
+        "type": "command",
+        "command": "__NAWALA_HOOK__ end --agent kiro"
+      },
+      "timeout": 10
+    }
+  ]
+}

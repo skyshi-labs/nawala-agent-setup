@@ -1,0 +1,7 @@
+{
+  "transport": "streamable_http",
+  "url": "__NAWALA_MCP_URL__",
+  "headers": { "Authorization": "__NAWALA_AUTH__" },
+  "enabled": true,
+  "mode": "optional"
+}

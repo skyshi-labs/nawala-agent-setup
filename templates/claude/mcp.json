@@ -1,0 +1,5 @@
+{
+  "type": "http",
+  "url": "__NAWALA_MCP_URL__",
+  "headers": { "Authorization": "__NAWALA_AUTH__" }
+}

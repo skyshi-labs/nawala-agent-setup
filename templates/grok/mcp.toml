@@ -1,0 +1,4 @@
+[mcp_servers.nawala]
+url = "__NAWALA_MCP_URL__"
+enabled = true
+headers = { "Authorization" = "__NAWALA_AUTH__" }

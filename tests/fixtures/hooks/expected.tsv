@@ -1,0 +1,14 @@
+# <empty> = empty string, - = not applicable
+# fixture	--agent	mode	agent	sessionId	cwd	prompt	env USER_PROMPT
+claude-prompt.json	claude	prompt	claude	claude-sess-1	/tmp/nawala-proj	Fix the login redirect bug	-
+claude-start.json	claude	start	claude	claude-sess-1	/tmp/nawala-proj	-	-
+codex-prompt.json	codex	prompt	codex	codex-sess-1	/tmp/nawala-proj	Add unit tests for the parser	-
+cursor-prompt.json	cursor	prompt	cursor	cursor-conv-1	/tmp/nawala-proj	Refactor the billing module	-
+cursor-start.json	cursor	start	cursor	cursor-conv-1	/tmp/nawala-proj	-	-
+kiro-prompt.json	kiro	prompt	kiro	kiro-sess-1	/tmp/nawala-proj	Write the docs page	Write the docs page
+antigravity-prompt.json	antigravity	prompt	antigravity	ag-conv-1	/tmp/nawala-proj	Plan the onboarding feature	-
+grok-prompt.json	grok	prompt	grok	grok-sess-1	/tmp/nawala-proj	<empty>	-
+grok-prompt.json	claude	prompt	grok	grok-sess-1	/tmp/nawala-proj	<empty>	-
+grok-prompt.json	cursor	prompt	grok	grok-sess-1	/tmp/nawala-proj	<empty>	-
+opencode-prompt.json	opencode	prompt	opencode	oc-sess-1	/tmp/nawala-proj	Explain the cache layer	-
+muse-prompt.json	muse	prompt	muse	muse-sess-1	/tmp/nawala-proj	Write the migration	-

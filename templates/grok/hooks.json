@@ -1,0 +1,6 @@
+{
+  "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "__NAWALA_HOOK__ prompt --agent grok", "timeout": 10 }] }],
+  "Stop": [{ "hooks": [{ "type": "command", "command": "__NAWALA_HOOK__ stop --agent grok", "timeout": 10 }] }],
+  "SessionStart": [{ "hooks": [{ "type": "command", "command": "__NAWALA_HOOK__ start --agent grok", "timeout": 10 }] }],
+  "SessionEnd": [{ "hooks": [{ "type": "command", "command": "__NAWALA_HOOK__ end --agent grok", "timeout": 10 }] }]
+}

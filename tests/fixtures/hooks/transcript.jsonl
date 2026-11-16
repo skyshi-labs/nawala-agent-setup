@@ -1,0 +1,2 @@
+{"type":"user","message":{"content":"deploy with password=Sup3rS3cretPw!"}}
+{"type":"assistant","message":{"content":"Deployed. Token in env: AKIAIOSFODNN7EXAMPLE"}}
