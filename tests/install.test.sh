@@ -92,7 +92,7 @@ test_other_mcp_entries_and_hooks_are_preserved() {
   # claude
   assert_eq "$(json_get "$HOME/.claude.json" '.mcpServers.github.url')" "https://api.githubcopilot.com/mcp/"
   assert_eq "$(json_get "$HOME/.claude.json" '.numStartups')" "12"
-  assert_eq "$(json_get "$HOME/.claude.json" '.mcpServers.nawala.url')" "$URL/mcp"
+  assert_eq "$(json_get "$HOME/.claude.json" '.mcpServers.nawala.url')" "$URL/mcp?agent=claude"
   assert_eq "$(json_get "$HOME/.claude/settings.json" '.model')" "opus"
   assert_eq "$(json_get "$HOME/.claude/settings.json" '[.hooks.Stop[].hooks[].command] | map(select(. == "say done")) | length')" "1"
   assert_eq "$(json_get "$HOME/.claude/settings.json" '.hooks.PreToolUse[0].hooks[0].command')" "~/bin/guard.sh"
@@ -109,7 +109,7 @@ test_other_mcp_entries_and_hooks_are_preserved() {
   # kiro, antigravity, opencode, grok, muse
   assert_eq "$(json_get "$HOME/.kiro/settings/mcp.json" '.mcpServers["aws-docs"].command')" "uvx"
   assert_eq "$(json_get "$HOME/.gemini/config/mcp_config.json" '.mcpServers.figma.serverUrl')" "https://mcp.figma.com/mcp"
-  assert_eq "$(json_get "$HOME/.gemini/config/mcp_config.json" '.mcpServers.nawala.serverUrl')" "$URL/mcp"
+  assert_eq "$(json_get "$HOME/.gemini/config/mcp_config.json" '.mcpServers.nawala.serverUrl')" "$URL/mcp?agent=antigravity"
   grep -q 'Always answer in English.' "$HOME/.gemini/GEMINI.md" || fail "GEMINI.md content lost"
   assert_eq "$(json_get "$HOME/.config/opencode/opencode.json" '.mcp.servers.sentry.url')" "https://mcp.sentry.dev/mcp"
   assert_eq "$(json_get "$HOME/.config/opencode/opencode.json" '.mcp.servers.nawala.type')" "remote"

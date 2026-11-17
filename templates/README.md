@@ -2,7 +2,7 @@
 
 Snippets `install.sh` merges into each agent's user config. Placeholders, filled in by `install.sh`:
 
-- `__NAWALA_MCP_URL__`: `<url>/mcp`
+- `__NAWALA_MCP_URL__`: `<url>/mcp?agent=<folder name>` (lets the server attribute MCP-only sessions to the agent)
 - `__NAWALA_AUTH__`: `Bearer <token>` (JSON: the whole string value; TOML: inside the quotes)
 - `__NAWALA_URL__`: the server URL (instruction text only)
 - `__NAWALA_HOOK__`: absolute path of `~/.nawala/hook.sh`

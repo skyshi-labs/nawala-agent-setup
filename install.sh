@@ -197,8 +197,9 @@ plan_delete() {
 record() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:--}" >>"$WORK/ops.tsv"; }
 
 # Replace the placeholders of a template. Values never pass through argv (token via env).
+# The MCP URL carries ?agent=<name> (the template's folder) so the server can attribute MCP-only sessions.
 render_json() { # template
-  get_file "templates/$1" | NWL_AUTH="Bearer $TOKEN" NWL_URL="$MCP_URL" NWL_HOOK="$HOOK_CMD" jq '
+  get_file "templates/$1" | NWL_AUTH="Bearer $TOKEN" NWL_URL="$MCP_URL?agent=${1%%/*}" NWL_HOOK="$HOOK_CMD" jq '
     def fill: if type == "object" then map_values(fill)
       elif type == "array" then map(fill)
       elif type == "string" then
@@ -211,7 +212,7 @@ render_text() { # template
   local s
   s="$(get_file "templates/$1"; printf x)"; s="${s%x}"
   s="${s//__NAWALA_AUTH__/Bearer $TOKEN}"
-  s="${s//__NAWALA_MCP_URL__/$MCP_URL}"
+  s="${s//__NAWALA_MCP_URL__/$MCP_URL?agent=${1%%/*}}"
   s="${s//__NAWALA_URL__/$URL}"
   s="${s//__NAWALA_HOOK__/$HOOK_CMD}"
   printf '%s' "$s"
