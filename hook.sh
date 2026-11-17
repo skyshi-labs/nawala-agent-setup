@@ -352,6 +352,14 @@ key_in_tracking_list() { # key file
     | any(. as $p | $key == $p or ($key | startswith($p + "/")))' "$2" >/dev/null 2>&1
 }
 valid_tracking_list() { jq -e '(.prefixes | type) == "array"' "$1" >/dev/null 2>&1; }
+# 0 when the folder is (inside) a local parent folder the developer linked to a project (`paths`,
+# case-insensitive, "/" separators). Lets repos inside a linked parent folder send events right away.
+cwd_in_tracking_paths() { # cwd file
+  jq -e --arg cwd "$1" '
+    ($cwd | gsub("\\\\"; "/") | ascii_downcase | sub("/+$"; "")) as $c
+    | [ (.paths // [])[] | strings | gsub("\\\\"; "/") | ascii_downcase | sub("/+$"; "") | select(. != "") ]
+    | any(. as $p | $c == $p or ($c | startswith($p + "/")))' "$2" >/dev/null 2>&1
+}
 
 # Prints "list" (use $TRACKING_CACHE), "all" (server predates /v1/tracking: send as before)
 # or "none" (no usable list: send nothing). Refreshes the cache when it is older than 15 min.
@@ -386,7 +394,7 @@ is_tracked() {
   list="$(tracking_list)"
   case "$list" in
     all) return 0 ;;
-    list) [ -n "$key" ] && key_in_tracking_list "$key" "$TRACKING_CACHE" ;;
+    list) { [ -n "$key" ] && key_in_tracking_list "$key" "$TRACKING_CACHE"; } || cwd_in_tracking_paths "$CWD" "$TRACKING_CACHE" ;;
     *) return 1 ;;
   esac
 }
@@ -440,11 +448,13 @@ print_rules() {
   local rules_dir="$NAWALA_DIR/rules" index resp code body pid md key
   index="$rules_dir/index.tsv"
   (umask 077; mkdir -p "$rules_dir") 2>/dev/null || return 0
-  key="$GIT_REMOTE"
+  # the folder decides the project (folder links), so the offline cache is per remote + folder
+  key="$GIT_REMOTE|$CWD"
   auth_file || return 0
   resp="$(curl -sS -m 2 -G -w '\n%{http_code}' -H @"$AUTH_FILE" \
     --data-urlencode "remote=$GIT_REMOTE" --data-urlencode "sessionId=$SESSION_ID" \
-    --data-urlencode "agent=$REAL_AGENT" "$URL/v1/rules" 2>/dev/null)"
+    --data-urlencode "agent=$REAL_AGENT" --data-urlencode "cwd=$CWD" --data-urlencode "root=$GIT_ROOT" \
+    "$URL/v1/rules" 2>/dev/null)"
   cleanup_auth
   code="$(printf '%s' "$resp" | tail -n 1)"
   body="$(printf '%s' "$resp" | sed '$d')"
