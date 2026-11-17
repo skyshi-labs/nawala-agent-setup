@@ -4,9 +4,11 @@ Connects AI coding agents to [Nawala](https://nawala.skyshi.com), which tracks w
 with coding agents. One static, versioned, signed shell script:
 
 - adds the `nawala` MCP server (HTTP, `Authorization: Bearer` header) to your agent's user config;
-- adds lightweight hooks where the agent supports them (prompt, stop, session start/end);
-- for agents without reliable hooks, adds a marked block to the user-global instruction file that
-  asks the agent to call the Nawala MCP tools (`set_current_story`, `report_progress`, `complete_story`).
+- adds lightweight hooks where the agent supports them (prompt, stop, session start/end) that send
+  activity metadata only: never prompts or any conversation content;
+- where the agent has a user-global instruction file, adds a marked block that asks the agent to
+  report its intent itself through the Nawala MCP tools (`set_current_story` with a short title in
+  its own words, then `report_progress` / `complete_story` with a one-line note).
 
 It edits files in your home directory only, after showing you a diff and asking. `--uninstall`
 removes exactly what it added. Everything it can install is in this repo: [`install.sh`](install.sh),
@@ -18,7 +20,7 @@ what is sent and how to verify a release.
 Take `VERSION` and the `install.sh` SHA-256 from the [latest release](https://github.com/skyshi-labs/nawala-agent-setup/releases/latest) notes:
 
 ```sh
-VERSION=v0.1.0 SHA256=<sha256 of install.sh from the release notes>
+VERSION=v0.1.1 SHA256=<sha256 of install.sh from the release notes>
 curl -fsSLo nawala-install.sh "https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION/install.sh" \
   && echo "$SHA256  nawala-install.sh" | shasum -a 256 -c - \
   && bash nawala-install.sh --agent claude --url https://nawala.skyshi.com
@@ -60,15 +62,19 @@ Set up Nawala for this coding agent. Stop at the first step that fails.
 | Claude Code | `~/.claude.json` | prompt, stop, start (+ project rules injected), end: `~/.claude/settings.json` | not needed | **Full hooks** |
 | Codex (CLI, IDE, app) | `~/.codex/config.toml` | prompt, stop, start (+ rules), end: `~/.codex/hooks.json` (trust once with `/hooks`) | not needed | **Full hooks** |
 | Cursor | `~/.cursor/mcp.json` | prompt, stop, start (+ rules), end: `~/.cursor/hooks.json` | not needed | **Full hooks** |
-| Grok Build (xAI) | `~/.grok/config.toml` | prompt (no prompt text), stop, start, end: `~/.grok/hooks/nawala.json` | `~/.grok/rules/nawala.md` | **Partial** (no prompt text, no context injection) |
+| Grok Build (xAI) | `~/.grok/config.toml` | prompt, stop, start, end: `~/.grok/hooks/nawala.json` | `~/.grok/rules/nawala.md` | **Partial** (no context injection) |
 | Kiro | `~/.kiro/settings/mcp.json` | experimental only (`--experimental`, CLI V3): `~/.kiro/hooks/nawala.json` | `~/.kiro/steering/nawala.md` | **MCP + instructions** |
 | Antigravity | `~/.gemini/config/mcp_config.json` | none (no prompt-submit event) | `~/.gemini/GEMINI.md` | **MCP + instructions** |
 | OpenCode | `~/.config/opencode/opencode.json` (`mcp.servers`) | none (plugin API is changing) | `~/.config/opencode/AGENTS.md` | **MCP + instructions** |
 | Muse Code (Meta) | `~/.config/muse/settings.json` (shape inferred, `mode: optional`) | none (format undocumented) | `<repo>/AGENTS.md` with `--project-dir <repo>` | **MCP + instructions** (unverified) |
 
-"Full hooks" means Nawala sees each prompt, each finished turn, session start/end and the commits
-made in between, without the agent doing anything. "MCP + instructions" relies on the agent
-following the instruction block and calling the MCP tools.
+"Full hooks" means Nawala sees when each prompt is submitted and each turn finishes, session
+start/end, the agent's model (and effort level where the agent reports it) and the commits made in
+between, without the agent doing anything. The hooks never send the prompt text or any other
+conversation content (see [SECURITY.md](SECURITY.md#what-is-sent-and-where)): what the work is
+about comes only from the agent's own `set_current_story` / `report_progress` / `complete_story`
+calls. "MCP + instructions" relies on the agent following the instruction block and calling the
+MCP tools.
 
 ## Which repos are tracked
 

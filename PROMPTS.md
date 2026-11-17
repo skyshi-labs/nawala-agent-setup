@@ -4,7 +4,7 @@ Fill in the placeholders, then paste the block for your agent:
 
 - `{{URL}}`: your Nawala server, e.g. `https://nawala.skyshi.com` (staging: `https://nawala.project.skyshi.io`)
 - `{{TOKEN}}`: your personal token `nwl_...` from the Nawala web app
-- `{{VERSION}}`: the release tag, e.g. `v0.1.0`
+- `{{VERSION}}`: the release tag, e.g. `v0.1.1`
 - `{{SHA256}}`: the SHA-256 of `install.sh`, from that release's notes (also in its `SHA256SUMS`)
 
 About the token: whatever you paste into a chat goes to the agent's model provider and stays in the
@@ -13,6 +13,11 @@ your own terminal; the installer then asks for the token with hidden input. Revo
 token in the web app if it ever leaks.
 
 The agent must wait for your explicit "yes" after the dry run. If it does not, stop it.
+
+After setup, the hooks send activity metadata only, never your prompts or conversation. The
+agent reports the intent itself: at the start of each task it calls `set_current_story` with a
+short `title` in its own words (never secrets, tokens, passwords or your raw prompt), and at the
+end `report_progress` or `complete_story` with a one-line `note` of what was done.
 
 ## Claude Code
 

@@ -17,7 +17,7 @@ export FAKE_TRACKING_DEFAULT='{"version":1,"prefixes":["github.com/acme/shop-api
 WORK_REMOTE="git@gitlab.com:acme/app.git"        # tracked by the default list
 PERSONAL_REMOTE="git@github.com:dev/dotfiles.git" # not tracked
 export NAWALA_TOKEN="$TOKEN"
-unset NAWALA_URL NAWALA_OFF NAWALA_DIR USER_PROMPT 2>/dev/null || true
+unset NAWALA_URL NAWALA_OFF NAWALA_DIR USER_PROMPT CLAUDE_EFFORT 2>/dev/null || true
 
 # every byte any command printed during the run; checked for the token at the end
 ALL_OUTPUT="$TEST_TMP/all-output.log"

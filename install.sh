@@ -27,7 +27,7 @@
 # than the ones listed by --dry-run. The only network call is GET <url>/api/auth/me.
 set -euo pipefail
 
-NAWALA_SETUP_VERSION="0.1.0"
+NAWALA_SETUP_VERSION="0.1.1"
 REPO="skyshi-labs/nawala-agent-setup"
 ALL_AGENTS="claude codex cursor kiro antigravity opencode grok muse"
 
@@ -521,7 +521,7 @@ do_install() {
   say "Network calls by this installer:"
   say "  GET $URL/api/auth/me   (Authorization: Bearer nwl_****; checks the token before anything is written)"
   say "Network calls the installed hooks will make (in the background, fail-open):"
-  say "  POST $URL/v1/events   (scrubbed prompt text, transcript tail on stop, git remote/branch/HEAD, commit metadata)"
+  say "  POST $URL/v1/events   (activity metadata only: session, agent, model/effort, git remote/branch/HEAD, commit metadata; never prompts or conversation content)"
   say "  GET  $URL/v1/tracking (which repos are work repos; cached 15 min; untracked repos send nothing)"
   say "  GET  $URL/v1/rules    (on session start: project rules, 2s timeout)"
   say "MCP clients will connect to: $MCP_URL"

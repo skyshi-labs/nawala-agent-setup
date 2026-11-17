@@ -8,7 +8,8 @@ allowed-tools: Bash, Read, Grep
 # Nawala setup
 
 Nawala tracks which story a developer works on. This skill installs the `nawala` MCP server and,
-where the agent supports it, lightweight hooks. It never runs anything without the user's "yes".
+where the agent supports it, lightweight hooks that send activity metadata only (never prompts or
+conversation content). It never runs anything without the user's "yes".
 
 Inputs the user must give you: the Nawala URL (`https://...`), the release version (`vX.Y.Z`),
 the expected SHA-256 of `install.sh`, and the agent name. The token is entered by the user only.
@@ -25,10 +26,15 @@ the expected SHA-256 of `install.sh`, and the agent name. The token is entered b
    (or without `NAWALA_TOKEN`, so the installer asks for it with hidden input).
 6. Verify with the agent's MCP list command and report the result.
 
+After setup, report intent yourself on every task: at the start call `set_current_story` with a
+short `title` stating the intent in your own words (plus `model` / `effort` if you know them), at
+the end `report_progress` or `complete_story` with a one-line `note`. Never put secrets, tokens,
+passwords or the user's raw prompt in them.
+
 To remove everything: `bash /tmp/nawala-install.sh --uninstall --dry-run`, ask for "yes", then
 `bash /tmp/nawala-install.sh --uninstall --yes`.
 
 Network: github.com (download), and the Nawala URL the user gives (`/api/auth/me` during install;
-`/v1/events`, `/v1/rules` and `/mcp` afterwards). Nothing else.
+`/v1/tracking`, `/v1/events`, `/v1/rules` and `/mcp` afterwards). Nothing else.
 
 Never print, log or store the token, never use sudo, and never edit the agent config files by hand.

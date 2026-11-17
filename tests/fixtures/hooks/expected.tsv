@@ -1,14 +1,16 @@
-# <empty> = empty string, - = not applicable
-# fixture	--agent	mode	agent	sessionId	cwd	prompt	env USER_PROMPT
-claude-prompt.json	claude	prompt	claude	claude-sess-1	/tmp/nawala-proj	Fix the login redirect bug	-
-claude-start.json	claude	start	claude	claude-sess-1	/tmp/nawala-proj	-	-
-codex-prompt.json	codex	prompt	codex	codex-sess-1	/tmp/nawala-proj	Add unit tests for the parser	-
-cursor-prompt.json	cursor	prompt	cursor	cursor-conv-1	/tmp/nawala-proj	Refactor the billing module	-
-cursor-start.json	cursor	start	cursor	cursor-conv-1	/tmp/nawala-proj	-	-
-kiro-prompt.json	kiro	prompt	kiro	kiro-sess-1	/tmp/nawala-proj	Write the docs page	Write the docs page
-antigravity-prompt.json	antigravity	prompt	antigravity	ag-conv-1	/tmp/nawala-proj	Plan the onboarding feature	-
-grok-prompt.json	grok	prompt	grok	grok-sess-1	/tmp/nawala-proj	<empty>	-
-grok-prompt.json	claude	prompt	grok	grok-sess-1	/tmp/nawala-proj	<empty>	-
-grok-prompt.json	cursor	prompt	grok	grok-sess-1	/tmp/nawala-proj	<empty>	-
-opencode-prompt.json	opencode	prompt	opencode	oc-sess-1	/tmp/nawala-proj	Explain the cache layer	-
-muse-prompt.json	muse	prompt	muse	muse-sess-1	/tmp/nawala-proj	Write the migration	-
+# <empty> = empty string, - = not applicable, <none> = field absent from the event
+# prompt = text the fixture carries: it must NOT appear anywhere in the event
+# fixture	--agent	mode	agent	sessionId	cwd	prompt	env USER_PROMPT	model	effort
+claude-prompt.json	claude	prompt	claude	claude-sess-1	/tmp/nawala-proj	Fix the login redirect bug	-	<none>	<none>
+claude-start.json	claude	start	claude	claude-sess-1	/tmp/nawala-proj	-	-	claude-opus-4-5	<none>
+claude-stop.json	claude	stop	claude	claude-sess-1	/tmp/nawala-proj	-	-	<none>	xhigh
+codex-prompt.json	codex	prompt	codex	codex-sess-1	/tmp/nawala-proj	Add unit tests for the parser	-	gpt-5-codex	<none>
+cursor-prompt.json	cursor	prompt	cursor	cursor-conv-1	/tmp/nawala-proj	Refactor the billing module	-	auto	<none>
+cursor-start.json	cursor	start	cursor	cursor-conv-1	/tmp/nawala-proj	-	-	claude-4.5-sonnet-thinking	max
+kiro-prompt.json	kiro	prompt	kiro	kiro-sess-1	/tmp/nawala-proj	Write the docs page	Write the docs page	<none>	<none>
+antigravity-prompt.json	antigravity	prompt	antigravity	ag-conv-1	/tmp/nawala-proj	Plan the onboarding feature	-	gemini-3	<none>
+grok-prompt.json	grok	prompt	grok	grok-sess-1	/tmp/nawala-proj	<empty>	-	<none>	<none>
+grok-prompt.json	claude	prompt	grok	grok-sess-1	/tmp/nawala-proj	<empty>	-	<none>	<none>
+grok-prompt.json	cursor	prompt	grok	grok-sess-1	/tmp/nawala-proj	<empty>	-	<none>	<none>
+opencode-prompt.json	opencode	prompt	opencode	oc-sess-1	/tmp/nawala-proj	Explain the cache layer	-	<none>	<none>
+muse-prompt.json	muse	prompt	muse	muse-sess-1	/tmp/nawala-proj	Write the migration	-	<none>	<none>

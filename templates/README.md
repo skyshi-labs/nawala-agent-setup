@@ -45,8 +45,8 @@ JSON fragments are merged with `jq` (other entries kept). TOML fragments are app
 
 ## grok (Grok Build, xAI)
 - `grok/mcp.toml` -> `~/.grok/config.toml`. Verified keys `url`, `enabled`, `headers`.
-- `grok/hooks.json` -> `~/.grok/hooks/nawala.json`. Verified shape; no prompt text and no context
-  injection are documented, so prompt events carry no text.
+- `grok/hooks.json` -> `~/.grok/hooks/nawala.json`. Verified shape; no context injection is
+  documented.
 - `grok/rules.md` -> `~/.grok/rules/nawala.md`. Verified directory.
 
 ## muse (Muse Code, Meta)
@@ -57,5 +57,7 @@ JSON fragments are merged with `jq` (other entries kept). TOML fragments are app
   user-global instruction file).
 
 ## instructions.md
-The block for agents without reliable hooks: call `set_current_story` at task start,
-`report_progress` after meaningful steps, `complete_story` at the end.
+The instruction block (also the body of `kiro/steering.md` and `grok/rules.md`). Hooks send
+activity metadata only, never prompts, so the intent comes from the agent: `set_current_story`
+with a short `title` in its own words (plus `remote`, `model`, `effort`) at task start, and
+`report_progress` / `complete_story` with a one-line `note` at the end. Never secrets or the raw prompt.

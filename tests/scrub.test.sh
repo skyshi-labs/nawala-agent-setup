@@ -1,5 +1,7 @@
 # shellcheck shell=bash
-# Client-side secret scrubbing (same patterns as the server's src/ingest/scrub.ts).
+# Client-side secret scrubbing (same patterns as the server's src/ingest/scrub.ts). No prompt or
+# conversation text is sent any more; the scrubber still guards the strings that are (cwd, git
+# remote/branch/root, commit file paths), so it is exercised here through the cwd field.
 # Sample secrets are assembled at runtime so no secret-looking literal sits in the repo
 # (keeps GitHub push protection and secret scanners quiet).
 
@@ -7,9 +9,9 @@
 # reading /dev/urandom directly never stops after head exits (the macOS job hung here until its timeout).
 rnd() { (head -c 16384 /dev/urandom | LC_ALL=C tr -dc "${2:-A-Za-z0-9}" 2>/dev/null | head -c "$1") || true; }
 
-scrub_prompt() { # text -> scrubbed prompt via hook.sh --print-event
-  jq -nc --arg p "$1" '{session_id:"s",cwd:"/tmp",prompt:$p}' >"$HOME/p.json"
-  OUT="$(bash "$HOOK" prompt --agent claude --print-event <"$HOME/p.json" | jq -r .prompt)"
+scrub_prompt() { # text -> scrubbed copy via hook.sh --print-event (sent as the cwd string)
+  jq -nc --arg p "$1" '{session_id:"s",cwd:$p}' >"$HOME/p.json"
+  OUT="$(bash "$HOOK" prompt --agent claude --print-event <"$HOME/p.json" | jq -r .cwd)"
 }
 
 test_scrubs_sample_secrets() {
@@ -66,10 +68,23 @@ test_scrubs_high_entropy_but_keeps_normal_text() {
   assert_eq "$OUT" "$keep" "over-scrubbed normal text"
 }
 
-test_scrubs_secret_keys_in_raw_hook_payload() {
+test_raw_hook_payload_is_never_sent() {
   new_home
-  jq -nc --arg t "$(rnd 24)" '{session_id:"s",cwd:"/tmp",prompt:"hi",api_key:$t,nested:{password:"p4ssw0rd!"}}' >"$HOME/p.json"
+  local t; t="$(rnd 24)"
+  jq -nc --arg t "$t" '{session_id:"s",cwd:"/tmp",prompt:"hi",api_key:$t,nested:{password:"p4ssw0rd!"},note:"kept-local"}' >"$HOME/p.json"
   OUT="$(bash "$HOOK" prompt --agent claude --print-event <"$HOME/p.json")"
-  assert_eq "$(printf '%s' "$OUT" | jq -r .hook.api_key)" "[REDACTED]"
-  assert_eq "$(printf '%s' "$OUT" | jq -r .hook.nested.password)" "[REDACTED]"
+  printf '%s' "$OUT" | jq -e 'has("hook") or has("prompt") | not' >/dev/null || fail "raw payload in the event"
+  assert_not_contains "$OUT" "$t" "api_key value sent"
+  assert_not_contains "$OUT" "p4ssw0rd" "nested password sent"
+  assert_not_contains "$OUT" "kept-local" "unknown payload key sent"
+}
+
+test_git_remote_password_is_scrubbed() {
+  new_home
+  local pw; pw="Hx$(rnd 10)9q"
+  mkdir -p "$HOME/r" && git -C "$HOME/r" init -q && git -C "$HOME/r" remote add origin "https://dev:$pw@gitlab.com/acme/app.git"
+  printf '{"session_id":"s","cwd":"%s"}' "$HOME/r" >"$HOME/p.json"
+  OUT="$(bash "$HOOK" prompt --agent claude --print-event <"$HOME/p.json")"
+  assert_eq "$(printf '%s' "$OUT" | jq -r .git.remote)" "https://dev:[REDACTED]@gitlab.com/acme/app.git"
+  assert_not_contains "$OUT" "$pw" "remote password in the event"
 }

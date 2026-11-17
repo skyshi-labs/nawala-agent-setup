@@ -1,1 +1,1 @@
-{"session_id":"cursor-conv-1","is_background_agent":false,"hook_event_name":"sessionStart","workspace_roots":["/tmp/nawala-proj"]}
+{"session_id":"cursor-conv-1","conversation_id":"cursor-conv-1","model":"default","model_id":"claude-4.5-sonnet-thinking","model_params":[{"id":"thinking","value":"true"},{"id":"effort","value":"max"}],"is_background_agent":false,"composer_mode":"agent","hook_event_name":"sessionStart","workspace_roots":["/tmp/nawala-proj"]}

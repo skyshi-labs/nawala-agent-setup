@@ -1,1 +1,1 @@
-{"session_id":"claude-sess-1","transcript_path":"__TRANSCRIPT__","cwd":"/tmp/nawala-proj","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done."}
+{"session_id":"claude-sess-1","transcript_path":"__TRANSCRIPT__","cwd":"/tmp/nawala-proj","hook_event_name":"Stop","stop_hook_active":false,"effort":{"level":"xhigh"},"last_assistant_message":"Done."}

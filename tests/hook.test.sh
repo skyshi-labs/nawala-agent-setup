@@ -12,10 +12,12 @@ hook() { # mode agent fixture [extra args] ; stdout in $OUT
   printf '%s\n' "$OUT" >>"$ALL_OUTPUT"
 }
 
+ALLOWED_KEYS='["agent","clientTs","clientVersion","commits","cwd","dedupeKey","effort","git","hookSource","id","model","sessionId","type"]'
+
 test_normalisation_per_agent_from_fixtures() {
-  local fixture agent mode exp_agent exp_sid exp_cwd exp_prompt user_prompt n=0
+  local fixture agent mode exp_agent exp_sid exp_cwd exp_prompt user_prompt exp_model exp_effort n=0
   hook_home
-  while IFS="	" read -r fixture agent mode exp_agent exp_sid exp_cwd exp_prompt user_prompt; do
+  while IFS="	" read -r fixture agent mode exp_agent exp_sid exp_cwd exp_prompt user_prompt exp_model exp_effort; do
     case "$fixture" in "#"*|"") continue ;; esac
     [ "$exp_prompt" = "<empty>" ] && exp_prompt=""
     if [ "$user_prompt" != "-" ]; then export USER_PROMPT="$user_prompt"; else unset USER_PROMPT; fi
@@ -27,25 +29,48 @@ test_normalisation_per_agent_from_fixtures() {
     assert_eq "$(printf '%s' "$OUT" | jq -r .sessionId)" "$exp_sid" "sessionId ($fixture)"
     assert_eq "$(printf '%s' "$OUT" | jq -r .cwd)" "$exp_cwd" "cwd ($fixture)"
     assert_eq "$(printf '%s' "$OUT" | jq -r .type)" "$mode" "type ($fixture)"
-    if [ "$mode" = "prompt" ]; then
-      assert_eq "$(printf '%s' "$OUT" | jq -r .prompt)" "$exp_prompt" "prompt ($fixture)"
-    else
-      assert_eq "$(printf '%s' "$OUT" | jq -r 'has("prompt")')" "false" "prompt on $mode"
-    fi
+    assert_eq "$(printf '%s' "$OUT" | jq -r 'if has("model") then .model else "<none>" end')" "$exp_model" "model ($fixture --agent $agent)"
+    assert_eq "$(printf '%s' "$OUT" | jq -r 'if has("effort") then .effort else "<none>" end')" "$exp_effort" "effort ($fixture --agent $agent)"
+    # activity metadata only: allow-listed keys, never the prompt text or the raw payload
+    printf '%s' "$OUT" | jq -e --argjson ok "$ALLOWED_KEYS" '(keys - $ok) == []' >/dev/null \
+      || fail "unexpected keys ($fixture): $(printf '%s' "$OUT" | jq -c keys)"
+    case "$exp_prompt" in -|"") ;; *) assert_not_contains "$OUT" "$exp_prompt" "prompt text in the event ($fixture)" ;; esac
     printf '%s' "$OUT" | jq -e '.id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")' >/dev/null || fail "bad id"
-    printf '%s' "$OUT" | jq -e '(.dedupeKey | length) == 32 and (.git | type) == "object" and (.hook | has("prompt") | not)' >/dev/null || fail "shape ($fixture)"
+    printf '%s' "$OUT" | jq -e '(.dedupeKey | length) == 32 and (.git | type) == "object" and .clientVersion == "0.1.1"' >/dev/null || fail "shape ($fixture)"
     n=$((n + 1))
   done <"$FIX/hooks/expected.tsv"
-  [ "$n" -ge 12 ] || fail "only $n fixtures checked"
+  [ "$n" -ge 13 ] || fail "only $n fixtures checked"
 }
 
-test_stop_sends_scrubbed_transcript_tail() {
+test_model_and_effort_are_trimmed_clipped_and_optional() {
+  hook_home
+  hook prompt codex "$FIX/hooks/muse-prompt.json" --print-event
+  printf '%s' "$OUT" | jq -e 'has("model") or has("effort") | not' >/dev/null || fail "model/effort without a source: $OUT"
+  jq -nc --arg m "  $(printf 'm%.0s' $(seq 1 150))  " '{session_id:"s",cwd:"/tmp",model:$m,effort:{level:" high\n"}}' >"$HOME/p.json"
+  hook stop claude "$HOME/p.json" --print-event
+  assert_eq "$(printf '%s' "$OUT" | jq -r '.model | length')" "100" "model clipped to 100"
+  assert_eq "$(printf '%s' "$OUT" | jq -r .effort)" "high" "effort trimmed"
+  # Claude Code also exposes the effort level as $CLAUDE_EFFORT; only for --agent claude
+  printf '{"session_id":"s","cwd":"/tmp","model":"   "}' >"$HOME/p.json"
+  OUT="$(CLAUDE_EFFORT=medium bash "$HOOK" prompt --agent claude --print-event <"$HOME/p.json")"
+  assert_eq "$(printf '%s' "$OUT" | jq -r '[.effort, has("model")] | @tsv')" "medium	false"
+  OUT="$(CLAUDE_EFFORT=medium bash "$HOOK" prompt --agent codex --print-event <"$HOME/p.json")"
+  assert_eq "$(printf '%s' "$OUT" | jq -r 'has("effort")')" "false" "CLAUDE_EFFORT used for codex"
+  # undocumented shapes are ignored (effort as an object for codex, model as an object)
+  printf '{"session_id":"s","cwd":"/tmp","model":{"id":"x"},"effort":"high","reasoning_effort":"high"}' >"$HOME/p.json"
+  hook prompt codex "$HOME/p.json" --print-event
+  printf '%s' "$OUT" | jq -e 'has("model") or has("effort") | not' >/dev/null || fail "undocumented model/effort used: $OUT"
+}
+
+test_stop_sends_no_transcript_or_assistant_message() {
   hook_home
   sed "s#__TRANSCRIPT__#$FIX/hooks/transcript.jsonl#" "$FIX/hooks/claude-stop.json" >"$HOME/stop.json"
   hook stop claude "$HOME/stop.json" --print-event
-  assert_contains "$(printf '%s' "$OUT" | jq -r .transcriptTail)" "Deployed."
-  assert_not_contains "$OUT" "Sup3rS3cretPw" "password in transcript tail"
-  assert_not_contains "$OUT" "AKIAIOSFODNN7EXAMPLE" "AWS key in transcript tail"
+  printf '%s' "$OUT" | jq -e 'has("transcriptTail") or has("hook") | not' >/dev/null || fail "transcript/hook in the stop event"
+  assert_not_contains "$OUT" "Deployed." "transcript in the stop event"
+  assert_not_contains "$OUT" "Sup3rS3cretPw" "transcript in the stop event"
+  assert_not_contains "$OUT" "transcript.jsonl" "transcript path in the stop event"
+  assert_not_contains "$OUT" "Done." "last assistant message in the stop event"
 }
 
 test_fallback_session_id_is_stable_per_agent_session() {
