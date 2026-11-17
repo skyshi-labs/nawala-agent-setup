@@ -406,7 +406,7 @@ tidy_spool() {
   [ -s "$SPOOL" ] || ls "$SPOOL".sending.* "$SPOOL".tidy.* >/dev/null 2>&1 || return 0
   clean="$(umask 077; mktemp "$NAWALA_DIR/.spool-clean.XXXXXX" 2>/dev/null)" || return 0
   for f in "$SPOOL".sending.* "$SPOOL".tidy.*; do
-    [ -f "$f" ] && [ -n "$(find "$f" -mmin +10 2>/dev/null)" ] || continue
+    if [ ! -f "$f" ] || [ -z "$(find "$f" -mmin +10 2>/dev/null)" ]; then continue; fi
     clean_spool_lines "$f" "$clean" && cat "$clean" >>"$SPOOL"
     rm -f "$f"
   done
