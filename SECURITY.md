@@ -16,7 +16,7 @@ Always:
 | `~/.nawala/config` (0600) | `NAWALA_URL`, `NAWALA_TOKEN`, `NAWALA_AGENTS` |
 | `~/.nawala/hook.sh` (0700) | the `hook.sh` of the release, embedded in `install.sh` (never downloaded) |
 | `~/.nawala/manifest.tsv`, `~/.nawala/backups/` | what was changed + the original files, for `--uninstall` |
-| `~/.nawala/state/`, `~/.nawala/rules/`, `~/.nawala/tracking.json`, `~/.nawala/spool.jsonl` | created later by the hook: per-session last HEAD, dedupe keys, cached project rules, cached list of tracked repo prefixes, events waiting for the server (max 10 MB) |
+| `~/.nawala/state/`, `~/.nawala/rules/`, `~/.nawala/tracking.json`, `~/.nawala/spool.jsonl` | created later by the hook: per-session last HEAD, dedupe keys, cached project rules, cached list of tracked repo prefixes, events waiting for the server (max 10 MB, same allow-listed fields as below) |
 
 Per agent (only for the agents you pass with `--agent`):
 
@@ -79,31 +79,45 @@ internal repos are never sent: no event, no rules request, not even the remote n
   before.
 - `NAWALA_OFF=1` still pauses everything.
 
-For a tracked repo the hooks (agents with hooks only) send, in the background with a 3 s timeout, `POST <url>/v1/events`:
+For a tracked repo the hooks (agents with hooks only) send, in the background with a 3 s timeout,
+`POST <url>/v1/events` with activity metadata only. These fields and nothing else:
 
-- the agent name, session id, event type (prompt / stop / start / end), timestamps, client version;
-- the working directory, git remote URL, branch, HEAD commit and repository root;
-- on prompt: the prompt text, **after local secret scrubbing**;
-- on stop: the last 64 KB of the agent's transcript file (when the agent provides one), scrubbed;
-- on stop: metadata of your new commits on the branch (sha, author email, date, parents, subject
-  line, and per changed file its path with added/deleted line counts), scrubbed;
-- the agent's raw hook payload minus the prompt (session id, model name, transcript path, the
-  agent's last message on stop), scrubbed, with any value under a secret-looking key replaced.
+- `id`, `type` (prompt / stop / start / end), `clientTs`, `sessionId`, `agent`, `hookSource`,
+  `dedupeKey` (a hash), `clientVersion`;
+- `cwd`, and `git`: remote URL, branch, HEAD commit and repository root;
+- `model` and `effort`, only when the agent's hook input documents them (metadata, clipped to
+  100 / 30 characters): Claude Code `model` (session start) and effort level, Codex `model`,
+  Cursor `model_id` and the `effort` model parameter, Antigravity `modelName`;
+- on stop: `commits`, your new commits on the branch as metadata: sha, author email, date,
+  parents, and per changed file its path with added/deleted line counts.
 
-Never sent: the contents of your source files, diffs, environment variables, other files.
+**Never sent, spooled or printed: prompts and any conversation content.** No prompt text, no
+transcript, no assistant message, no raw hook payload, no commit message (not even the subject
+line), no file contents, diffs or environment variables. The event is built from an allow-list
+(`clean_event` in `hook.sh`); the agent's hook input is read only to find the session id, the
+working directory, the model/effort and a turn id (the prompt is used only as a one-way hash, on
+this machine, to drop duplicate hook runs). Nawala learns what you are working on only
+from what the agent itself reports through the MCP tools (`set_current_story` with a short title
+of the intent, `report_progress` / `complete_story` with a one-line note); the installed
+instruction blocks tell the agent never to put secrets or your raw prompt in them.
+
+Events spooled by v0.1.0 (which sent prompts) are re-built with the same allow-list on the next
+hook run, in any repo, before they are sent or kept; lines that are not valid JSON are dropped.
 
 On session start the hook calls `GET <url>/v1/rules?remote=<git remote>&sessionId=...&agent=...`
 (2 s timeout) and gives the project's rules to agents that support context injection.
 
 The MCP server (`<url>/mcp`) receives only what the agent passes to the Nawala tools.
 
-**Local scrubbing** (`SCRUB_JQ` in `hook.sh`) mirrors the server's `src/ingest/scrub.ts`: private
-keys, Anthropic/OpenAI/GitHub/GitLab/AWS/Slack/Google/Stripe/Nawala keys, JWTs, `Bearer|Basic|Token`
+**Local scrubbing** (`SCRUB_JQ` in `hook.sh`) still runs over the strings that are sent (`cwd`,
+git remote/branch/root, commit file paths) as defence in depth, e.g. a password in an `https://`
+remote URL. It mirrors the server's `src/ingest/scrub.ts`: private keys,
+Anthropic/OpenAI/GitHub/GitLab/AWS/Slack/Google/Stripe/Nawala keys, JWTs, `Bearer|Basic|Token`
 values, passwords in URLs, `PASSWORD=`/`api_key:`-style assignments, and long high-entropy
-strings. Over-redaction is accepted. The server scrubs again on arrival. Audit it yourself:
+strings. Audit the event yourself:
 
 ```sh
-echo '{"session_id":"s","cwd":"/tmp","prompt":"export DB_PASSWORD=hunter2!!"}' \
+echo '{"session_id":"s","cwd":"/tmp","prompt":"this text is never sent"}' \
   | ~/.nawala/hook.sh prompt --agent claude --print-event      # prints the event, sends nothing
 ```
 
@@ -124,7 +138,7 @@ installer's output (masked as `nwl_****`), or in the dry run.
 Download the assets of the release you want (replace the version):
 
 ```sh
-VERSION=v0.1.0
+VERSION=v0.1.1
 base="https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION"
 for f in install.sh install.sh.sigstore.json SHA256SUMS SHA256SUMS.sigstore.json; do curl -fsSLO "$base/$f"; done
 ```

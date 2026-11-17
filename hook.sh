@@ -6,7 +6,7 @@
 #
 #   --agent        claude|codex|cursor|kiro|antigravity|opencode|grok|muse (default: claude,
 #                  which keeps hooks written by the legacy installer working)
-#   --print-event  build the event, scrub it and print it to stdout; send nothing, write no state
+#   --print-event  build the event and print it to stdout; send nothing, write no state
 #                  (use it to audit exactly what would leave your machine)
 #
 # Contract:
@@ -16,9 +16,15 @@
 #    No remote, `git config nawala.off true`, or no list (server down, no cache) = nothing sent
 #  - stdout is empty, except on `start` for agents that document context injection
 #    (claude, codex, cursor, kiro): the project's rules are printed in that agent's format
-#  - secrets are scrubbed on this machine BEFORE anything is sent (see scrub_* below)
+#  - activity metadata only: no prompt text, no transcript, no assistant message, no raw hook
+#    payload and no commit messages are ever sent, spooled or printed. Every event is built from
+#    an allow-list of fields (clean_event below); the developer's intent reaches Nawala only
+#    through the agent's own MCP calls (set_current_story / report_progress / complete_story)
+#  - the remaining strings (cwd, git remote/branch/root, commit file paths) are still scrubbed
+#    for secrets on this machine as defence in depth (see scrub_* below)
 #  - sending happens in the background; if the server is unreachable the event is spooled
-#    to ~/.nawala/spool.jsonl (max 10 MB) and retried on the next hook run
+#    to ~/.nawala/spool.jsonl (max 10 MB) and retried on the next hook run. Spooled lines are
+#    re-built with clean_event before they are sent or kept (v0.1.0 spooled prompts)
 #  - the token is read from ~/.nawala/config and passed to curl through a 0600 temp file,
 #    never on a command line
 #
@@ -26,7 +32,7 @@
 #              NAWALA_URL / NAWALA_TOKEN (override the config file),
 #              NAWALA_HOOK_SYNC=1 (run in the foreground; for debugging and tests)
 
-NAWALA_HOOK_VERSION="0.1.0"
+NAWALA_HOOK_VERSION="0.1.1"
 
 MODE="${1:-}"
 [ "${NAWALA_OFF:-0}" = "1" ] && exit 0
@@ -93,7 +99,9 @@ new_uuid() {
 safe_name() { printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '_'; }
 
 # ---- secret scrubbing (port of the server's src/ingest/scrub.ts; over-redaction is fine) --
-# Kept as one jq program so it is easy to audit and to test (tests/scrub.bats).
+# No prompt or conversation text is sent any more; this only guards the few strings that are
+# (a password in a git remote URL, a token in a directory or file name). Kept as one jq program
+# so it is easy to audit and to test (tests/scrub.test.sh).
 SCRUB_JQ='
 def secret_name: "[A-Za-z0-9_.-]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|CREDENTIALS?|SESSION[_-]?KEY|AUTH[_-]?KEY|SIGNING[_-]?KEY|ENCRYPTION[_-]?KEY|DATABASE[_-]?URL|DSN)[A-Za-z0-9_.-]*";
 def entropy: explode | length as $n
@@ -136,16 +144,53 @@ def scrub_value:
   else . end;
 '
 
+# ---- the event allow-list ---------------------------------------------------------------------
+# The ONLY shape that leaves this machine or is written to the spool. Anything else in the input
+# (prompt, transcriptTail, hook, commit message, unknown keys) is dropped. Also applied to every
+# spooled line, so events spooled by v0.1.0 lose their prompt/transcript/hook before sending.
+EVENT_JQ="$SCRUB_JQ"'
+def scalar: if type == "string" or type == "number" or type == "boolean" then . else null end;
+def meta($max): # model id / effort level: one trimmed line, clipped; null when empty
+  if type == "string" then gsub("[[:cntrl:]]+"; " ") | sub("^\\s+"; "") | sub("\\s+$"; "") | .[0:$max]
+    | if . == "" then null else . end
+  else null end;
+def opt($k; $v): if $v == null then {} else { ($k): $v } end;
+def text: if type == "string" then scrub_str else null end;
+def sha: if type == "string" and test("^[0-9a-fA-F]{7,64}$") then . else null end;
+def clean_commit:
+  { sha: (.sha | sha), authorEmail: (.authorEmail | scalar), authoredAt: (.authoredAt | scalar),
+    parents: [ (.parents // []) | if type == "array" then .[] else empty end | sha | strings ],
+    files: [ (.files // []) | if type == "array" then .[] else empty end | objects
+             | { path: (.path | text), additions: (.additions | scalar), deletions: (.deletions | scalar) } ] };
+def clean_event:
+  { id: (.id | scalar), type: (.type | scalar), clientTs: (.clientTs | scalar),
+    sessionId: (.sessionId | scalar), agent: (.agent | scalar), hookSource: (.hookSource | scalar),
+    dedupeKey: (.dedupeKey | scalar), clientVersion: (.clientVersion | scalar),
+    cwd: (.cwd | text),
+    git: ((.git | objects) // {} | { remote: (.remote | text), branch: (.branch | text),
+                                       head: (.head | text), root: (.root | text) }) }
+  + opt("model"; .model | meta(100)) + opt("effort"; .effort | meta(30))
+  + ( [ (.commits // []) | if type == "array" then .[] else empty end | objects | clean_commit ]
+      | if length > 0 then { commits: . } else {} end );
+'
+
 # ---- normalise the agent payload ----------------------------------------------------------
 # Each agent names things differently; this maps them onto one shape:
-#   claude/codex/kiro: session_id, cwd, prompt, transcript_path
+#   claude/codex/kiro: session_id, cwd, prompt
 #   cursor:            conversation_id (session_id on sessionStart/End), workspace_roots[0], prompt
 #   grok:              sessionId, cwd/workspaceRoot, promptId (no documented prompt text)
-#   antigravity:       conversationId, workspacePaths[0], lastUserInput, transcriptPath
+#   antigravity:       conversationId, workspacePaths[0], lastUserInput
 #   opencode (plugin): sessionID, directory, prompt
 #   muse:              Claude-style names assumed (unverified), camelCase accepted too
 # Grok also runs hooks from ~/.claude/settings.json and ~/.cursor/hooks.json; a camelCase
 # payload arriving through those is re-labelled as grok so the server sees one agent.
+# `prompt` stays on this machine: it is only hashed (duplicate detection), never sent.
+# model / effort (metadata only), documented fields only; other agents document none:
+#   claude:      model (SessionStart only, not always), effort.level (Stop and tool events) or
+#                the CLAUDE_EFFORT env var (same value)
+#   codex:       model (active model slug)
+#   cursor:      model_id (else the legacy model slug), model_params[] {id:"effort"}.value
+#   antigravity: modelName
 NORMALISE_JQ='
 def s: if . == null then "" elif type == "string" then . else tostring end;
 def first_str(f): [f | select(. != null and . != "") | s] | first // "";
@@ -166,12 +211,22 @@ def first_str(f): [f | select(. != null and . != "") | s] | first // "";
       if $agent == "antigravity" then first_str($in.lastUserInput, $in.prompt)
       elif $agent == "kiro" then first_str($in.prompt, $userPrompt)
       else first_str($in.prompt, $in.userPrompt, $in.user_prompt, $in.text) end),
-    transcriptPath: first_str($in.transcript_path, $in.transcriptPath),
+    model: (
+      if $agent == "claude" or $agent == "codex" then first_str($in.model | strings)
+      elif $agent == "cursor" then first_str(($in.model_id | strings), ($in.model | strings))
+      elif $agent == "antigravity" then first_str($in.modelName | strings)
+      else "" end),
+    effort: (
+      if $agent == "claude" then first_str(($in.effort | objects | .level | strings), $claudeEffort)
+      elif $agent == "cursor" then
+        first_str(($in.model_params // []) | arrays | .[] | objects | select(.id == "effort") | .value | strings)
+      else "" end),
     discriminator: first_str($in.prompt_id, $in.promptId, $in.turn_id, $in.generation_id, $in.executionNum)
   }
 '
 
-NORM="$(printf '%s' "$INPUT" | jq -c --arg declared "$AGENT" --arg userPrompt "${USER_PROMPT:-}" "$NORMALISE_JQ" 2>/dev/null)"
+NORM="$(printf '%s' "$INPUT" | jq -c --arg declared "$AGENT" --arg userPrompt "${USER_PROMPT:-}" \
+  --arg claudeEffort "${CLAUDE_EFFORT:-}" "$NORMALISE_JQ" 2>/dev/null)"
 [ -n "$NORM" ] || exit 0
 REAL_AGENT="$(printf '%s' "$NORM" | jq -r '.agent')"
 SESSION_ID="$(printf '%s' "$NORM" | jq -r '.sessionId')"
@@ -336,6 +391,38 @@ is_tracked() {
   esac
 }
 
+# ---- spool hygiene --------------------------------------------------------------------------
+# clean_spool_lines in out: every line re-built with clean_event; lines that are not a JSON
+# object are dropped. Idempotent, so an already clean spool comes out byte-identical.
+clean_spool_lines() {
+  jq -R -c "$EVENT_JQ"'fromjson? | objects | clean_event' "$1" >"$2" 2>/dev/null
+}
+
+# v0.1.0 spooled prompt text, transcript tails, raw hook payloads and commit subjects. Rewrite
+# the spool (and any claim file a crashed run left behind for >10 min) when it holds anything
+# but clean events. Runs on every hook run, tracked repo or not; does nothing when clean.
+tidy_spool() {
+  local f clean claim
+  [ -s "$SPOOL" ] || ls "$SPOOL".sending.* "$SPOOL".tidy.* >/dev/null 2>&1 || return 0
+  clean="$(umask 077; mktemp "$NAWALA_DIR/.spool-clean.XXXXXX" 2>/dev/null)" || return 0
+  for f in "$SPOOL".sending.* "$SPOOL".tidy.*; do
+    if [ ! -f "$f" ] || [ -z "$(find "$f" -mmin +10 2>/dev/null)" ]; then continue; fi
+    clean_spool_lines "$f" "$clean" && cat "$clean" >>"$SPOOL"
+    rm -f "$f"
+  done
+  if [ -s "$SPOOL" ]; then
+    clean_spool_lines "$SPOOL" "$clean"
+    if ! cmp -s "$SPOOL" "$clean"; then
+      claim="$SPOOL.tidy.$$"
+      if mv "$SPOOL" "$claim" 2>/dev/null; then
+        clean_spool_lines "$claim" "$clean" && cat "$clean" >>"$SPOOL"
+        rm -f "$claim"
+      fi
+    fi
+  fi
+  rm -f "$clean"
+}
+
 # ---- SessionStart: project rules -> agent context (synchronous, 2s, fail-open) ------------
 context_format() {
   case "$REAL_AGENT" in
@@ -395,7 +482,7 @@ fi
 # decide in the background. Untracked repo: stop here, send nothing, write no state.
 if [ "$MODE" = "start" ] && [ "$PRINT_EVENT" != "1" ]; then
   git_info
-  is_tracked || exit 0
+  if ! is_tracked; then ( umask 077; tidy_spool ) </dev/null >/dev/null 2>&1; exit 0; fi
   ensure_session || exit 0
   print_rules
 fi
@@ -404,6 +491,7 @@ fi
 # The same agent turn can fire twice (e.g. Grok runs its own hooks AND the Claude-compatible
 # ones). The first run claims a key (atomic mkdir) and later runs within 10s are dropped.
 # The key is also sent as `dedupeKey` so the server can drop duplicates that slip through.
+# Without a turn id, the prompt / last message is folded in as a one-way hash (never the text).
 DEDUPE_KEY=""
 dedupe_key() {
   local disc
@@ -440,8 +528,9 @@ antigravity_new_prompt() {
 
 # ---- commits on stop ------------------------------------------------------------------------
 # Commits on the current branch since the last head this hook saw for this session (first time:
-# last 24h by the author, max 50). Metadata only: sha, author email, date, parents, subject,
-# per-file line counts. git gets 1s; on timeout no commits are sent.
+# last 24h by the author, max 50). Metadata only: sha, author email, date, parents, per-file
+# line counts. The commit message (subject included) is never read. git gets 1s; on timeout no
+# commits are sent.
 collect_commits() {
   [ -n "$GIT_ROOT" ] && [ -n "$GIT_HEAD" ] || return 0
   local state last out pid i email
@@ -450,11 +539,11 @@ collect_commits() {
   [ "$last" = "$GIT_HEAD" ] && return 0
   out="$(mktemp "${TMPDIR:-/tmp}/nawala.git.XXXXXX")" || return 0
   if [ -n "$last" ] && git -C "$CWD" cat-file -e "$last^{commit}" 2>/dev/null; then
-    ( git -C "$CWD" log --no-color --numstat -n 50 --format='%H%x09%ae%x09%aI%x09%P%x09%s' "$last..HEAD" >"$out" 2>/dev/null ) &
+    ( git -C "$CWD" log --no-color --numstat -n 50 --format='%H%x09%ae%x09%aI%x09%P' "$last..HEAD" >"$out" 2>/dev/null ) &
   else
     email="$(git -C "$CWD" config user.email 2>/dev/null)"
     [ -n "$email" ] || { rm -f "$out"; return 0; }
-    ( git -C "$CWD" log --no-color --numstat -n 50 --since='24 hours ago' --author="$email" --format='%H%x09%ae%x09%aI%x09%P%x09%s' HEAD >"$out" 2>/dev/null ) &
+    ( git -C "$CWD" log --no-color --numstat -n 50 --since='24 hours ago' --author="$email" --format='%H%x09%ae%x09%aI%x09%P' HEAD >"$out" 2>/dev/null ) &
   fi
   pid=$!
   i=0
@@ -469,8 +558,7 @@ collect_commits() {
       if ($l | test("^[0-9a-f]{40}\t")) then
         . + [ ($l | split("\t")) as $f
               | { sha: $f[0], authorEmail: $f[1], authoredAt: $f[2],
-                  parents: (($f[3] // "") | split(" ") | map(select(. != ""))),
-                  message: ($f[4:] | join("\t")), files: [] } ]
+                  parents: (($f[3] // "") | split(" ") | map(select(. != ""))), files: [] } ]
       elif ($l | test("^([0-9]+|-)\t([0-9]+|-)\t")) and length > 0 then
         ($l | split("\t")) as $f
         | .[-1].files += [ { path: ($f[2:] | join("\t")),
@@ -481,51 +569,27 @@ collect_commits() {
   [ -s "$json" ] && printf '%s' "$json"
 }
 
-# ---- build the event (scrubbed) -------------------------------------------------------------
+# ---- build the event (allow-listed, scrubbed) ------------------------------------------------
+# Built from the hook's own variables only: the agent's raw payload ($INPUT) is not passed in.
 build_event() {
-  local id ts tp tailfile="" commitsfile="" event
+  local id ts commitsfile="" event
   id="$(new_uuid)" || return 1
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  if [ "$MODE" = "stop" ]; then
-    # transcript tail (<= 64KB; drop the first, likely partial, line when truncated)
-    tp="$(printf '%s' "$NORM" | jq -r '.transcriptPath')"
-    case "$tp" in "~/"*) tp="$HOME/${tp#\~/}" ;; esac
-    if [ -n "$tp" ] && [ -f "$tp" ]; then
-      tailfile="$(mktemp "${TMPDIR:-/tmp}/nawala.XXXXXX")" || tailfile=""
-      if [ -n "$tailfile" ]; then
-        local size
-        size="$(wc -c <"$tp" 2>/dev/null | tr -d ' ')"
-        if [ "${size:-0}" -gt 65536 ]; then tail -c 65536 "$tp" 2>/dev/null | tail -n +2 >"$tailfile"; else cat "$tp" >"$tailfile" 2>/dev/null; fi
-      fi
-    fi
-    commitsfile="$(collect_commits)"
-  fi
-  event="$(printf '%s' "$INPUT" | jq -c \
+  [ "$MODE" = "stop" ] && commitsfile="$(collect_commits)"
+  event="$(jq -nc \
     --arg id "$id" --arg type "$MODE" --arg ts "$ts" --arg cwd "$CWD" --arg sid "$SESSION_ID" \
     --arg agent "$REAL_AGENT" --arg hookSource "$AGENT" --arg dedupe "$DEDUPE_KEY" --arg ver "$NAWALA_HOOK_VERSION" \
-    --argjson norm "$NORM" \
     --arg remote "$GIT_REMOTE" --arg branch "$GIT_BRANCH" --arg head "$GIT_HEAD" --arg root "$GIT_ROOT" \
-    --rawfile tail "${tailfile:-/dev/null}" --slurpfile commits "${commitsfile:-/dev/null}" "$SCRUB_JQ"'
+    --argjson norm "$NORM" --slurpfile commits "${commitsfile:-/dev/null}" "$EVENT_JQ"'
       def nn: if . == "" then null else . end;
-      ({
-        id: $id, type: $type, clientTs: $ts,
-        sessionId: $sid,
-        agent: $agent,
-        hookSource: $hookSource,
-        dedupeKey: ($dedupe | nn),
-        clientVersion: $ver,
-        cwd: $cwd,
+      {
+        id: $id, type: $type, clientTs: $ts, sessionId: $sid, agent: $agent, hookSource: $hookSource,
+        dedupeKey: ($dedupe | nn), clientVersion: $ver, cwd: $cwd,
         git: { remote: ($remote|nn), branch: ($branch|nn), head: ($head|nn), root: ($root|nn) },
-        hook: del(.prompt, .lastUserInput, .userPrompt, .user_prompt)
-      }
-      + (if $type == "prompt" then { prompt: $norm.prompt } else {} end)
-      + (if $type == "stop" and $tail != "" then { transcriptTail: $tail } else {} end)
-      + (if $type == "stop" and ($commits | length) > 0 and ($commits[0] | length) > 0 then { commits: $commits[0] } else {} end)
-      ) as $e
-      | ($e | del(.id, .type, .clientTs, .sessionId, .agent, .hookSource, .dedupeKey, .clientVersion, .git) | scrub_value)
-        + ($e | {id, type, clientTs, sessionId, agent, hookSource, dedupeKey, clientVersion, git})
+        model: $norm.model, effort: $norm.effort,
+        commits: (if $type == "stop" then ($commits[0] // []) else [] end)
+      } | clean_event
     ' 2>/dev/null)"
-  [ -n "$tailfile" ] && rm -f "$tailfile"
   [ -n "$commitsfile" ] && rm -f "$commitsfile"
   [ -n "$event" ] || return 1
   printf '%s' "$event"
@@ -542,6 +606,7 @@ fi
 # ---- everything below runs in the background ------------------------------------------------
 nawala_main() {
   umask 077
+  tidy_spool # before the tracking check: old spooled prompts go away in any repo
   if [ "$MODE" != "start" ]; then # start already decided in the foreground
     git_info
     is_tracked || return 0
@@ -577,13 +642,16 @@ nawala_main() {
   }
   retryable() { case "$1" in 000|408|429|5??) return 0 ;; *) return 1 ;; esac; }
 
-  # 1) flush the spool first (atomic claim via mv so parallel hooks don't double-send)
+  # 1) flush the spool first (atomic claim via mv so parallel hooks don't double-send);
+  #    only re-built lines are sent or put back, never the claimed file itself
   if [ -s "$SPOOL" ]; then
     local claim="$SPOOL.sending.$$" code
     if mv "$SPOOL" "$claim" 2>/dev/null; then
-      code="$(jq -cs '{events: .}' "$claim" 2>/dev/null | post)"
-      retryable "$code" && cat "$claim" >>"$SPOOL"
-      rm -f "$claim"
+      if clean_spool_lines "$claim" "$claim.clean" && [ -s "$claim.clean" ]; then
+        code="$(jq -cs '{events: .}' "$claim.clean" 2>/dev/null | post)"
+        retryable "$code" && cat "$claim.clean" >>"$SPOOL"
+      fi
+      rm -f "$claim" "$claim.clean"
     fi
   fi
 
