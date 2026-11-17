@@ -3,7 +3,9 @@
 # Sample secrets are assembled at runtime so no secret-looking literal sits in the repo
 # (keeps GitHub push protection and secret scanners quiet).
 
-rnd() { (LC_ALL=C tr -dc "${2:-A-Za-z0-9}" </dev/urandom 2>/dev/null | head -c "$1") || true; }
+# Reads a bounded 16 KiB of /dev/urandom: CI runners can start steps with SIGPIPE ignored, and then BSD tr
+# reading /dev/urandom directly never stops after head exits (the macOS job hung here until its timeout).
+rnd() { (head -c 16384 /dev/urandom | LC_ALL=C tr -dc "${2:-A-Za-z0-9}" 2>/dev/null | head -c "$1") || true; }
 
 scrub_prompt() { # text -> scrubbed prompt via hook.sh --print-event
   jq -nc --arg p "$1" '{session_id:"s",cwd:"/tmp",prompt:$p}' >"$HOME/p.json"
