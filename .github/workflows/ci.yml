@@ -20,6 +20,7 @@ jobs:
           shellcheck install.sh hook.sh scripts/*.sh tests/run.sh tests/lib.sh tests/*.test.sh tests/bin/curl
 
   test:
+    timeout-minutes: 15 # a stuck runner fails fast instead of hanging for hours
     strategy:
       fail-fast: false
       matrix:
