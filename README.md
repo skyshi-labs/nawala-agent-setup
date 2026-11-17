@@ -1,5 +1,21 @@
 # nawala-agent-setup
 
+[![CI](https://github.com/skyshi-labs/nawala-agent-setup/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/skyshi-labs/nawala-agent-setup/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/skyshi-labs/nawala-agent-setup?label=release)](https://github.com/skyshi-labs/nawala-agent-setup/releases/latest)
+[![Signed with Sigstore cosign](https://img.shields.io/badge/signed-Sigstore%20cosign-2e3440?logo=sigstore&logoColor=white)](SECURITY.md#how-to-verify-before-installing)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+[![Scanned by Cisco AI Defense skill-scanner](https://img.shields.io/badge/scanned%20by-Cisco%20AI%20Defense%20skill--scanner-049fd9?logo=cisco&logoColor=white)](SECURITY.md#expected-scanner-findings)
+[![Scanned by NVIDIA SkillSpector](https://img.shields.io/badge/scanned%20by-NVIDIA%20SkillSpector-76b900?logo=nvidia&logoColor=white)](SECURITY.md#expected-scanner-findings)
+[![Semgrep (blocking)](https://img.shields.io/badge/Semgrep-bash%20%2B%20secrets%2C%20blocking-6c39d6?logo=semgrep&logoColor=white)](https://github.com/skyshi-labs/nawala-agent-setup/actions/workflows/ci.yml)
+[![ShellCheck (blocking)](https://img.shields.io/badge/ShellCheck-blocking-4eaa25?logo=gnubash&logoColor=white)](https://github.com/skyshi-labs/nawala-agent-setup/actions/workflows/ci.yml)
+
+> Every push and every release runs these checks in CI ([`ci.yml`](.github/workflows/ci.yml)). Semgrep and ShellCheck
+> fail the build on a finding; the Cisco AI Defense skill-scanner and NVIDIA SkillSpector run on exactly what an agent
+> receives and their reports are attached to each release as `scanner-reports.tar.gz` (expected findings are explained
+> in [SECURITY.md](SECURITY.md#expected-scanner-findings)). Each release asset is signed with Sigstore cosign (keyless)
+> and listed in `SHA256SUMS`.
+
 Connects AI coding agents to [Nawala](https://nawala.skyshi.com), which tracks what developers work on
 with coding agents. One static, versioned, signed shell script:
 
