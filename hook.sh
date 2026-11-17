@@ -32,7 +32,7 @@
 #              NAWALA_URL / NAWALA_TOKEN (override the config file),
 #              NAWALA_HOOK_SYNC=1 (run in the foreground; for debugging and tests)
 
-NAWALA_HOOK_VERSION="0.1.1"
+NAWALA_HOOK_VERSION="0.1.2"
 
 MODE="${1:-}"
 [ "${NAWALA_OFF:-0}" = "1" ] && exit 0

@@ -36,7 +36,7 @@ test_normalisation_per_agent_from_fixtures() {
       || fail "unexpected keys ($fixture): $(printf '%s' "$OUT" | jq -c keys)"
     case "$exp_prompt" in -|"") ;; *) assert_not_contains "$OUT" "$exp_prompt" "prompt text in the event ($fixture)" ;; esac
     printf '%s' "$OUT" | jq -e '.id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")' >/dev/null || fail "bad id"
-    printf '%s' "$OUT" | jq -e '(.dedupeKey | length) == 32 and (.git | type) == "object" and .clientVersion == "0.1.1"' >/dev/null || fail "shape ($fixture)"
+    printf '%s' "$OUT" | jq -e '(.dedupeKey | length) == 32 and (.git | type) == "object" and .clientVersion == "0.1.2"' >/dev/null || fail "shape ($fixture)"
     n=$((n + 1))
   done <"$FIX/hooks/expected.tsv"
   [ "$n" -ge 13 ] || fail "only $n fixtures checked"
