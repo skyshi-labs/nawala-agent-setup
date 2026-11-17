@@ -20,7 +20,7 @@ what is sent and how to verify a release.
 Take `VERSION` and the `install.sh` SHA-256 from the [latest release](https://github.com/skyshi-labs/nawala-agent-setup/releases/latest) notes:
 
 ```sh
-VERSION=v0.1.1 SHA256=<sha256 of install.sh from the release notes>
+VERSION=v0.1.2 SHA256=<sha256 of install.sh from the release notes>
 curl -fsSLo nawala-install.sh "https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION/install.sh" \
   && echo "$SHA256  nawala-install.sh" | shasum -a 256 -c - \
   && bash nawala-install.sh --agent claude --url https://nawala.skyshi.com

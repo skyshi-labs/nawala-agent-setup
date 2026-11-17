@@ -138,7 +138,7 @@ installer's output (masked as `nwl_****`), or in the dry run.
 Download the assets of the release you want (replace the version):
 
 ```sh
-VERSION=v0.1.1
+VERSION=v0.1.2
 base="https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION"
 for f in install.sh install.sh.sigstore.json SHA256SUMS SHA256SUMS.sigstore.json; do curl -fsSLO "$base/$f"; done
 ```
