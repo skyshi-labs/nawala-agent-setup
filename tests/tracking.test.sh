@@ -242,3 +242,18 @@ test_kill_switch_beats_tracking() {
   [ ! -s "$FAKE_CURL_LOG" ] || fail "NAWALA_OFF=1 still called the network"
   [ ! -e "$HOME/.nawala/tracking.json" ] || fail "NAWALA_OFF=1 still wrote the cache"
 }
+
+test_repo_inside_a_linked_parent_folder_is_sent_and_rules_get_the_folder() {
+  tr_home
+  new_repo "$HOME/clients/acme/new-svc" "https://gitlab.com/someone-else/new-svc.git"
+  new_repo "$HOME/clients/acmex/other" "https://gitlab.com/someone-else/other.git"
+  export FAKE_TRACKING_BODY="{\"version\":1,\"prefixes\":[\"gitlab.com/acme\"],\"paths\":[\"$HOME/Clients/Acme/\"]}"
+  export FAKE_RULES_CODE=200 FAKE_RULES_BODY='{"projectId":"0b6f2c1e-1111-4222-8333-444455556666","markdown":"# Rules"}'
+  tr_event start "$HOME/clients/acme/new-svc"
+  assert_eq "$(printf '%s' "$OUT" | jq -r .hookSpecificOutput.additionalContext)" "# Rules"
+  assert_contains "$(cat "$FAKE_CURL_LOG")" "cwd=" "rules request carries the folder"
+  tr_event prompt "$HOME/clients/acme/new-svc"
+  assert_eq "$(sent)" "2" "events posted for a repo inside a linked parent folder"
+  tr_event prompt "$HOME/clients/acmex/other"
+  assert_eq "$(sent)" "2" "a sibling folder with the same name prefix is not inside the linked folder"
+}
