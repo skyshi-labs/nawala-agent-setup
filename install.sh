@@ -522,6 +522,7 @@ do_install() {
   say "  GET $URL/api/auth/me   (Authorization: Bearer nwl_****; checks the token before anything is written)"
   say "Network calls the installed hooks will make (in the background, fail-open):"
   say "  POST $URL/v1/events   (scrubbed prompt text, transcript tail on stop, git remote/branch/HEAD, commit metadata)"
+  say "  GET  $URL/v1/tracking (which repos are work repos; cached 15 min; untracked repos send nothing)"
   say "  GET  $URL/v1/rules    (on session start: project rules, 2s timeout)"
   say "MCP clients will connect to: $MCP_URL"
   [ -z "$NOTES" ] || { say ""; say "Notes:"; printf '%s' "$NOTES" | mask; }
@@ -639,7 +640,7 @@ do_uninstall() {
   say ""
   show_plan
   if [ -z "$remaining" ]; then
-    say "--- delete $(pretty "$NAWALA_DIR")/{manifest.tsv,backups,state,rules,spool.jsonl} (when created by this installer)"
+    say "--- delete $(pretty "$NAWALA_DIR")/{manifest.tsv,backups,state,rules,tracking.json,spool.jsonl} (when created by this installer)"
   fi
   [ -z "$NOTES" ] || { say ""; say "Notes:"; printf '%s' "$NOTES" | mask; }
   if [ "$DRY_RUN" = "1" ]; then say ""; say "Dry run: nothing was changed."; exit 0; fi
@@ -654,7 +655,7 @@ do_uninstall() {
   dirs="$(awk -F'\t' -v sel=" $sel " 'index(sel, " " $1 " ") > 0 && $2 == "dir" { print length($3) "\t" $3 }' "$MANIFEST" | sort -rn | cut -f2-)"
   if [ -z "$remaining" ]; then
     if awk -F'\t' -v d="$NAWALA_DIR" '$2 == "dir" && $3 == d { f = 1 } END { exit !f }' "$MANIFEST"; then
-      rm -rf "$BACKUPS" "$NAWALA_DIR/state" "$NAWALA_DIR/rules" "$NAWALA_DIR/spool.jsonl" "$NAWALA_DIR"/spool.jsonl.sending.* "$MANIFEST"
+      rm -rf "$BACKUPS" "$NAWALA_DIR/state" "$NAWALA_DIR/rules" "$NAWALA_DIR/spool.jsonl" "$NAWALA_DIR"/spool.jsonl.sending.* "$NAWALA_DIR"/tracking.json* "$MANIFEST"
     else
       local dir_mode=""
       if [ -f "$BACKUPS/.nawala-dir-mode" ]; then dir_mode="$(cat "$BACKUPS/.nawala-dir-mode")"; fi

@@ -11,6 +11,9 @@
 #
 # Contract:
 #  - always exits 0 and never blocks the agent for long; NAWALA_OFF=1 disables everything
+#  - work repos only: nothing is sent (no event, no rules request) unless the repo's git remote
+#    matches a prefix from GET /v1/tracking (cached in ~/.nawala/tracking.json for 15 min).
+#    No remote, `git config nawala.off true`, or no list (server down, no cache) = nothing sent
 #  - stdout is empty, except on `start` for agents that document context injection
 #    (claude, codex, cursor, kiro): the project's rules are printed in that agent's format
 #  - secrets are scrubbed on this machine BEFORE anything is sent (see scrub_* below)
@@ -197,10 +200,10 @@ fallback_session() {
   [ "$MODE" = "end" ] || printf '%s\n%s\n' "$id" "$now" >"$file" 2>/dev/null
   printf '%s' "$id"
 }
-if [ -z "$SESSION_ID" ]; then
-  SESSION_ID="$(fallback_session)"
-  [ -n "$SESSION_ID" ] || exit 0
-fi
+ensure_session() { # sets SESSION_ID (fallback when the agent sent none); 1 when there is none
+  [ -n "$SESSION_ID" ] || SESSION_ID="$(fallback_session)"
+  [ -n "$SESSION_ID" ]
+}
 
 GIT_REMOTE=""; GIT_BRANCH=""; GIT_HEAD=""; GIT_ROOT=""
 git_info() {
@@ -224,6 +227,114 @@ auth_file() {
   printf 'Authorization: Bearer %s\n' "$TOKEN" >"$AUTH_FILE"
 }
 cleanup_auth() { [ -n "$AUTH_FILE" ] && rm -f "$AUTH_FILE"; AUTH_FILE=""; }
+
+# ---- which repos are tracked (work repos only) ----------------------------------------------
+# Personal and internal repos must never leave this machine. The server lists the remote
+# prefixes this user may send (GET /v1/tracking: client rules + repos of the user's work
+# projects); the request carries no repo information. The list is cached for 15 minutes.
+TRACKING_CACHE="$NAWALA_DIR/tracking.json"
+TRACKING_MAX_AGE_MIN=15
+
+# Port of the server's normalizeRemote() (src/projects/normalize.ts); must give the same key.
+#   git@gitlab.com:Org/Repo.git -> gitlab.com/org/repo      prints nothing + returns 1 when none
+normalize_remote() {
+  local s="$1" host="" path="" rest authority after user re bad='[/[:space:]]' two='//' one='/'
+  s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"   # trim
+  [ -n "$s" ] || return 1
+  re='^[A-Za-z][A-Za-z0-9+.-]*://'
+  if [[ $s =~ $re ]]; then
+    # url form: proto://[user[:pass]@]host[:port]/path (also the odd ssh://host:org/repo)
+    rest="${s#*://}"
+    case "$rest" in
+      */*) authority="${rest%%/*}"; path="${rest#*/}" ;;
+      *) authority="$rest"; path="" ;;
+    esac
+    authority="${authority##*@}"
+    case "$authority" in
+      *:*)
+        after="${authority#*:}"; authority="${authority%%:*}"
+        case "$after" in *[!0-9]*) path="$after/$path" ;; esac ;;
+    esac
+    host="$authority"
+  else
+    # scp-like form: [user@]host:path (user = text before the first @, no / or spaces)
+    re='^([^:/[:space:]]+):(.+)$'
+    user=""
+    case "$s" in *@*) user="${s%%@*}" ;; esac
+    if [ -n "$user" ] && ! [[ $user =~ $bad ]] && [[ ${s#*@} =~ $re ]]; then
+      host="${BASH_REMATCH[1]}"; path="${BASH_REMATCH[2]}"
+    elif [[ $s =~ $re ]]; then
+      host="${BASH_REMATCH[1]}"; path="${BASH_REMATCH[2]}"
+    fi
+    if [ -n "$host" ]; then
+      re='^[0-9]+/'   # host:22/org/repo is not valid scp syntax but appears in the wild
+      [[ $path =~ $re ]] && path="${path:${#BASH_REMATCH[0]}}"
+    else
+      # bare "gitlab.com/org/repo"
+      rest="${s#*/}"
+      re='^[^/[:space:]]+\.[^/[:space:]]+$'
+      if [ "$rest" = "$s" ] || [ -z "$rest" ] || ! [[ ${s%%/*} =~ $re ]]; then return 1; fi
+      host="${s%%/*}"; path="$rest"
+    fi
+  fi
+  host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  host="${host#www.}"
+  path="${path%%[?#]*}"
+  while case "$path" in *//*) true ;; *) false ;; esac; do path="${path//$two/$one}"; done
+  path="${path#/}"; path="${path%/}"
+  case "$path" in *.[Gg][Ii][Tt]) path="${path%????}" ;; esac
+  path="${path%/}"
+  path="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+  if [ -z "$host" ] || [ -z "$path" ]; then return 1; fi
+  printf '%s/%s\n' "$host" "$path"
+}
+
+# Same rule as the server's matchClientRule(): prefix p (lowercased, trailing slashes removed)
+# matches when key == p or key starts with p + "/".
+key_in_tracking_list() { # key file
+  jq -e --arg key "$1" '
+    [ (.prefixes // [])[] | strings | ascii_downcase | sub("/+$"; "") | select(. != "") ]
+    | any(. as $p | $key == $p or ($key | startswith($p + "/")))' "$2" >/dev/null 2>&1
+}
+valid_tracking_list() { jq -e '(.prefixes | type) == "array"' "$1" >/dev/null 2>&1; }
+
+# Prints "list" (use $TRACKING_CACHE), "all" (server predates /v1/tracking: send as before)
+# or "none" (no usable list: send nothing). Refreshes the cache when it is older than 15 min.
+tracking_list() {
+  local tmp code=""
+  if valid_tracking_list "$TRACKING_CACHE" \
+    && [ -n "$(find "$TRACKING_CACHE" -mmin "-$TRACKING_MAX_AGE_MIN" 2>/dev/null)" ]; then
+    echo list; return 0
+  fi
+  (umask 077; mkdir -p "$NAWALA_DIR") 2>/dev/null
+  tmp="$(umask 077; mktemp "$TRACKING_CACHE.XXXXXX" 2>/dev/null)" || tmp=""
+  if [ -n "$tmp" ] && auth_file; then
+    code="$(curl -sS -m 2 -o "$tmp" -w '%{http_code}' -H @"$AUTH_FILE" "$URL/v1/tracking" 2>/dev/null)"
+    cleanup_auth
+  fi
+  if [ "$code" = "200" ] && valid_tracking_list "$tmp" && mv "$tmp" "$TRACKING_CACHE" 2>/dev/null; then
+    echo list; return 0
+  fi
+  [ -n "$tmp" ] && rm -f "$tmp"
+  if [ "$code" = "404" ]; then echo all
+  elif valid_tracking_list "$TRACKING_CACHE"; then echo list   # stale cache beats nothing
+  else echo none
+  fi
+}
+
+# 0 when events for this repo may be sent. Needs git_info first.
+is_tracked() {
+  local key list
+  [ -n "$GIT_REMOTE" ] || return 1
+  [ "$(git -C "$CWD" config --bool --get nawala.off 2>/dev/null)" = "true" ] && return 1
+  key="$(normalize_remote "$GIT_REMOTE")" || key=""
+  list="$(tracking_list)"
+  case "$list" in
+    all) return 0 ;;
+    list) [ -n "$key" ] && key_in_tracking_list "$key" "$TRACKING_CACHE" ;;
+    *) return 1 ;;
+  esac
+}
 
 # ---- SessionStart: project rules -> agent context (synchronous, 2s, fail-open) ------------
 context_format() {
@@ -274,13 +385,18 @@ print_rules() {
   esac
 }
 
-# Cursor documents a JSON answer for beforeSubmitPrompt; answer "allow" explicitly.
+# Cursor documents a JSON answer for beforeSubmitPrompt; answer "allow" explicitly (in every
+# repo: it is only an answer to Cursor, nothing leaves the machine).
 if [ "$MODE" = "prompt" ] && [ "$AGENT" = "cursor" ] && [ "$PRINT_EVENT" != "1" ]; then
   printf '{"continue":true}\n'
 fi
 
+# SessionStart decides in the foreground (the rules must be printed now); the other events
+# decide in the background. Untracked repo: stop here, send nothing, write no state.
 if [ "$MODE" = "start" ] && [ "$PRINT_EVENT" != "1" ]; then
   git_info
+  is_tracked || exit 0
+  ensure_session || exit 0
   print_rules
 fi
 
@@ -417,6 +533,7 @@ build_event() {
 
 if [ "$PRINT_EVENT" = "1" ]; then
   git_info
+  ensure_session || exit 0
   DEDUPE_KEY="$(dedupe_key)"
   build_event | jq . 2>/dev/null
   exit 0
@@ -425,6 +542,11 @@ fi
 # ---- everything below runs in the background ------------------------------------------------
 nawala_main() {
   umask 077
+  if [ "$MODE" != "start" ]; then # start already decided in the foreground
+    git_info
+    is_tracked || return 0
+    ensure_session || return 0
+  fi
   mkdir -p "$NAWALA_DIR" "$NAWALA_DIR/state" 2>/dev/null || return 0
   DEDUPE_KEY="$(dedupe_key)"
   claim_once || return 0
@@ -435,7 +557,6 @@ nawala_main() {
     [ -f "${d}ts" ] || continue
     [ $((now - $(cat "${d}ts" 2>/dev/null || echo "$now"))) -gt 86400 ] && rm -f "${d}ts" && rmdir "$d" 2>/dev/null
   done
-  [ "$MODE" = "start" ] || git_info
 
   local event
   event="$(build_event)" || return 0

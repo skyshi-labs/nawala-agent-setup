@@ -49,19 +49,20 @@ test_stop_sends_scrubbed_transcript_tail() {
 }
 
 test_fallback_session_id_is_stable_per_agent_session() {
-  local s1 s2 s3
+  local s1 s2 s3 f
   hook_home
+  new_repo "$HOME/repo"; f="$(in_repo "$FIX/hooks/nosession-prompt.json" "$HOME/repo")"
   : >"$FAKE_CURL_BODIES"
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" start --agent opencode <"$FIX/hooks/nosession-prompt.json" >/dev/null
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent opencode <"$FIX/hooks/nosession-prompt.json" >/dev/null
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" end --agent opencode <"$FIX/hooks/nosession-prompt.json" >/dev/null
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" start --agent opencode <"$f" >/dev/null
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent opencode <"$f" >/dev/null
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" end --agent opencode <"$f" >/dev/null
   s1="$(sed -n 1p "$FAKE_CURL_BODIES" | jq -r .sessionId)"
   s2="$(sed -n 2p "$FAKE_CURL_BODIES" | jq -r .sessionId)"
   s3="$(sed -n 3p "$FAKE_CURL_BODIES" | jq -r .sessionId)"
   case "$s1" in opencode-*) ;; *) fail "fallback id not namespaced: $s1" ;; esac
   assert_eq "$s2" "$s1" "prompt reused the session"
   assert_eq "$s3" "$s1" "end reused the session"
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent opencode <"$FIX/hooks/nosession-prompt.json" >/dev/null
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent opencode <"$f" >/dev/null
   [ "$(sed -n 4p "$FAKE_CURL_BODIES" | jq -r .sessionId)" != "$s1" ] || fail "session not reset after end"
 }
 
@@ -81,8 +82,7 @@ test_no_stdout_except_documented_context() {
 test_start_injects_rules_in_each_agents_format() {
   local repo
   hook_home
-  repo="$HOME/repo"; mkdir -p "$repo"
-  git -C "$repo" init -q && git -C "$repo" remote add origin git@gitlab.com:acme/app.git
+  repo="$HOME/repo"; new_repo "$repo"
   export FAKE_RULES_CODE=200 FAKE_RULES_BODY='{"projectId":"0b6f2c1e-1111-4222-8333-444455556666","markdown":"# Rules\nUse feature branches."}'
   printf '{"session_id":"s1","cwd":"%s"}' "$repo" >"$HOME/start.json"
   hook start claude "$HOME/start.json"
@@ -111,44 +111,51 @@ test_kill_switch() {
 }
 
 test_posts_event_with_agent_and_dedupes_double_fire() {
+  local f
   hook_home
+  new_repo "$HOME/repo"; f="$(in_repo "$FIX/hooks/grok-prompt.json" "$HOME/repo")"
   : >"$FAKE_CURL_BODIES"
   # Grok fires its own hook and the Claude-compatible one for the same turn
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent grok <"$FIX/hooks/grok-prompt.json" >/dev/null
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent claude <"$FIX/hooks/grok-prompt.json" >/dev/null
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent cursor <"$FIX/hooks/grok-prompt.json" >/dev/null
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent grok <"$f" >/dev/null
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent claude <"$f" >/dev/null
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent cursor <"$f" >/dev/null
   assert_eq "$(grep -c . "$FAKE_CURL_BODIES")" "1" "duplicate events posted"
   assert_eq "$(jq -r .agent "$FAKE_CURL_BODIES")" "grok"
   assert_eq "$(jq -r .sessionId "$FAKE_CURL_BODIES")" "grok-sess-1"
   # a different turn of the same session is not a duplicate
-  sed 's/gp-1/gp-2/' "$FIX/hooks/grok-prompt.json" | NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent grok >/dev/null
+  sed 's/gp-1/gp-2/' "$f" | NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent grok >/dev/null
   assert_eq "$(grep -c . "$FAKE_CURL_BODIES")" "2"
 }
 
 test_antigravity_counts_each_prompt_once() {
+  local f
   hook_home
+  new_repo "$HOME/repo"; f="$(in_repo "$FIX/hooks/antigravity-prompt.json" "$HOME/repo")"
   : >"$FAKE_CURL_BODIES"
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent antigravity <"$FIX/hooks/antigravity-prompt.json"
-  sed 's/"invocationNum":1/"invocationNum":2/' "$FIX/hooks/antigravity-prompt.json" >"$HOME/ag2.json"
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent antigravity <"$f"
+  sed 's/"invocationNum":1/"invocationNum":2/' "$f" >"$HOME/ag2.json"
   sleep 0 && NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent antigravity <"$HOME/ag2.json"
   assert_eq "$(grep -c . "$FAKE_CURL_BODIES")" "1" "PreInvocation repeats counted twice"
 }
 
 test_unreachable_server_spools_and_flushes() {
   hook_home
-  FAKE_EVENTS_CODE=503 NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent codex <"$FIX/hooks/codex-prompt.json"
+  new_repo "$HOME/repo"
+  FAKE_EVENTS_CODE=503 NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent codex <"$(in_repo "$FIX/hooks/codex-prompt.json" "$HOME/repo")"
   assert_eq "$(grep -c . "$HOME/.nawala/spool.jsonl")" "1" "event not spooled"
   : >"$FAKE_CURL_BODIES"
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent muse <"$FIX/hooks/muse-prompt.json"
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent muse <"$(in_repo "$FIX/hooks/muse-prompt.json" "$HOME/repo")"
   assert_eq "$(head -n 1 "$FAKE_CURL_BODIES" | jq -r '.events | length')" "1" "spool not flushed"
   [ ! -s "$HOME/.nawala/spool.jsonl" ] || fail "spool not emptied"
 }
 
 test_hook_never_puts_token_on_argv() {
   hook_home
+  new_repo "$HOME/repo"
   : >"$FAKE_CURL_LOG"
-  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent claude <"$FIX/hooks/claude-prompt.json"
-  [ -s "$FAKE_CURL_LOG" ] || fail "no request made"
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent claude <"$(in_repo "$FIX/hooks/claude-prompt.json" "$HOME/repo")"
+  grep -q '/v1/tracking' "$FAKE_CURL_LOG" || fail "no tracking request made"
+  grep -q '/v1/events' "$FAKE_CURL_LOG" || fail "no event request made"
   grep -q "$TOKEN" "$FAKE_CURL_LOG" && fail "token on curl argv"
   ls "${TMPDIR:-/tmp}"/nawala.auth.* >/dev/null 2>&1 && fail "auth temp file left behind"
   return 0

@@ -264,7 +264,11 @@ test_installed_hook_runs_end_to_end() {
   new_home
   install_sh --agent claude --url "$URL" --yes
   : >"$FAKE_CURL_BODIES"
-  NAWALA_HOOK_SYNC=1 "$HOME/.nawala/hook.sh" prompt --agent claude <"$FIX/hooks/claude-prompt.json" >/dev/null
+  new_repo "$HOME/repo"
+  NAWALA_HOOK_SYNC=1 "$HOME/.nawala/hook.sh" prompt --agent claude <"$(in_repo "$FIX/hooks/claude-prompt.json" "$HOME/repo")" >/dev/null
   assert_eq "$(jq -r '.sessionId' "$FAKE_CURL_BODIES")" "claude-sess-1"
   assert_eq "$(jq -r '.agent' "$FAKE_CURL_BODIES")" "claude"
+  [ -f "$HOME/.nawala/tracking.json" ] || fail "hook did not cache the tracking list"
+  install_sh --uninstall --yes
+  [ ! -e "$HOME/.nawala" ] || fail "~/.nawala left behind after the hook ran: $(ls -A "$HOME/.nawala")"
 }

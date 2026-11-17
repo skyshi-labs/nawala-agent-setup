@@ -12,6 +12,10 @@ TOKEN="nwl_TestTokenDoNotUse_0123456789abcdefghijKLMN"
 LEGACY_TOKEN="nwl_LegacyTokenDoNotUse_0123456789abcdefghij"
 URL="https://nawala.example.com"
 export PATH="$ROOT/tests/bin:$PATH"
+# what the fake server's GET /v1/tracking returns unless a test sets FAKE_TRACKING_BODY
+export FAKE_TRACKING_DEFAULT='{"version":1,"prefixes":["github.com/acme/shop-api","gitlab.com/acme"]}'
+WORK_REMOTE="git@gitlab.com:acme/app.git"        # tracked by the default list
+PERSONAL_REMOTE="git@github.com:dev/dotfiles.git" # not tracked
 export NAWALA_TOKEN="$TOKEN"
 unset NAWALA_URL NAWALA_OFF NAWALA_DIR USER_PROMPT 2>/dev/null || true
 
@@ -24,7 +28,7 @@ new_home() { # [seed]  fresh HOME (optionally seeded from tests/fixtures/homes/<
   export HOME
   export FAKE_CURL_LOG="$HOME.curl.log" FAKE_CURL_BODIES="$HOME.bodies.jsonl" FAKE_CURL_HEADERS="$HOME.headers.log"
   : >"$FAKE_CURL_LOG"; : >"$FAKE_CURL_BODIES"; : >"$FAKE_CURL_HEADERS"
-  unset FAKE_ME_CODE FAKE_EVENTS_CODE FAKE_RULES_CODE FAKE_RULES_BODY
+  unset FAKE_ME_CODE FAKE_EVENTS_CODE FAKE_RULES_CODE FAKE_RULES_BODY FAKE_TRACKING_CODE FAKE_TRACKING_BODY
   if [ -n "${1:-}" ]; then
     cp -Rp "$FIX/homes/$1/." "$HOME/"
     local f
@@ -32,6 +36,16 @@ new_home() { # [seed]  fresh HOME (optionally seeded from tests/fixtures/homes/<
       sed -e "s#__HOME__#$HOME#g" -e "s#__TOKEN__#$LEGACY_TOKEN#g" "$f" >"$f.x" && cat "$f.x" >"$f" && rm -f "$f.x"
     done || true
   fi
+}
+
+new_repo() { # dir [remote]  git repo with an origin remote (default: a tracked work remote; "" = none)
+  mkdir -p "$1" && git -C "$1" init -q
+  if [ "${2-$WORK_REMOTE}" != "" ]; then git -C "$1" remote add origin "${2-$WORK_REMOTE}"; fi
+}
+in_repo() { # fixture dir -> prints the path of a copy of the fixture whose cwd is dir
+  local copy; copy="$(mktemp "$TEST_TMP/fixture.XXXXXX")"
+  sed "s#/tmp/nawala-proj#$2#g" "$1" >"$copy"
+  printf '%s' "$copy"
 }
 
 hash_file() { if command -v sha256sum >/dev/null 2>&1; then sha256sum <"$1" | cut -d' ' -f1; else shasum -a 256 <"$1" | cut -d' ' -f1; fi; }
