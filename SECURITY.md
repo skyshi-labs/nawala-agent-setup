@@ -16,7 +16,7 @@ Always:
 | `~/.nawala/config` (0600) | `NAWALA_URL`, `NAWALA_TOKEN`, `NAWALA_AGENTS` |
 | `~/.nawala/hook.sh` (0700) | the `hook.sh` of the release, embedded in `install.sh` (never downloaded) |
 | `~/.nawala/manifest.tsv`, `~/.nawala/backups/` | what was changed + the original files, for `--uninstall` |
-| `~/.nawala/state/`, `~/.nawala/rules/`, `~/.nawala/spool.jsonl` | created later by the hook: per-session last HEAD, dedupe keys, cached project rules, events waiting for the server (max 10 MB) |
+| `~/.nawala/state/`, `~/.nawala/rules/`, `~/.nawala/tracking.json`, `~/.nawala/spool.jsonl` | created later by the hook: per-session last HEAD, dedupe keys, cached project rules, cached list of tracked repo prefixes, events waiting for the server (max 10 MB) |
 
 Per agent (only for the agents you pass with `--agent`):
 
@@ -60,7 +60,26 @@ Only to the URL you passed with `--url` (stored in `~/.nawala/config`). Nothing 
 The installer makes one call: `GET <url>/api/auth/me` with your token, to check it before any
 file is written. `--dry-run` makes no network call.
 
-The hooks (agents with hooks only) send, in the background with a 3 s timeout, `POST <url>/v1/events`:
+### Which repos are tracked
+
+Work repos only. Before doing anything for an event, the hook checks the repo's git remote
+(`origin`, else the first remote) against the prefixes the server lists for you: your
+organisation's client rules and the repos of the projects you are a member of. Personal and
+internal repos are never sent: no event, no rules request, not even the remote name.
+
+- `GET <url>/v1/tracking` (2 s timeout) returns the prefixes. It carries no repo information. The
+  answer is cached in `~/.nawala/tracking.json` (0600) and refreshed after 15 minutes.
+- The match runs on this machine: the remote is normalised (`git@GitLab.com:Org/Repo.git` ->
+  `gitlab.com/org/repo`, same rules as the server) and matches a prefix when it equals it or
+  starts with it followed by `/`.
+- Not tracked: no git remote; `git config nawala.off true` in the repo (per-repo opt-out); a
+  remote that matches no prefix.
+- If the list cannot be fetched, the cached copy is used whatever its age; with no cached copy,
+  nothing is sent (fail closed). A server too old to have `/v1/tracking` (404) gets events as
+  before.
+- `NAWALA_OFF=1` still pauses everything.
+
+For a tracked repo the hooks (agents with hooks only) send, in the background with a 3 s timeout, `POST <url>/v1/events`:
 
 - the agent name, session id, event type (prompt / stop / start / end), timestamps, client version;
 - the working directory, git remote URL, branch, HEAD commit and repository root;
@@ -96,6 +115,7 @@ installer's output (masked as `nwl_****`), or in the dry run.
 - `export NAWALA_OFF=1`: every hook exits immediately and sends nothing (set it in your shell
   profile to stop all tracking; the MCP server stays available).
 - Pause from inside the agent: the Nawala MCP tool `pause_tracking`.
+- One repo only: `git config nawala.off true` inside it (the hook then makes no network call for it).
 - Revoke the token in the Nawala web app: all hooks and MCP calls stop working at once.
 - Remove everything: `install.sh --uninstall`.
 

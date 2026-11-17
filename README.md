@@ -70,6 +70,18 @@ Set up Nawala for this coding agent. Stop at the first step that fails.
 made in between, without the agent doing anything. "MCP + instructions" relies on the agent
 following the instruction block and calling the MCP tools.
 
+## Which repos are tracked
+
+Work repos only. The hooks send something only when the repo's git remote matches your
+organisation's client rules or a repo of a project you are a member of. The hook fetches that list
+from the server (`GET /v1/tracking`, cached 15 minutes in `~/.nawala/tracking.json`) and decides on
+your machine, so personal and internal repos are never sent, not even their name. A repo without a
+git remote is never tracked, and when the list cannot be fetched and there is no cached copy, nothing
+is sent.
+
+- Opt one repo out: `git config nawala.off true` (inside that repo).
+- Pause everything: `export NAWALA_OFF=1`.
+
 ## Uninstall
 
 ```sh
@@ -84,6 +96,7 @@ If you or the agent changed it since, uninstall removes only the Nawala entries 
 The last uninstall also removes `~/.nawala`.
 
 Pause tracking without uninstalling: `export NAWALA_OFF=1` (hooks exit immediately and send nothing).
+Stop tracking one repo: `git config nawala.off true` in that repo.
 
 ## Development
 
