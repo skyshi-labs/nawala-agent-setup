@@ -61,6 +61,6 @@ assert_eq() { [ "$1" = "$2" ] || fail "${3:-values differ}: expected [$2] got [$
 assert_contains() { case "$1" in *"$2"*) ;; *) fail "${3:-missing} [$2]"; printf '%s\n' "$1" | head -20 >&2; return 1 ;; esac; }
 assert_not_contains() { case "$1" in *"$2"*) fail "${3:-unexpected} [$2]" ;; esac; }
 assert_same_tree() { # before after
-  [ "$1" = "$2" ] || { fail "${3:-tree changed}"; diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") | head -20 >&2; return 1; }
+  [ "$1" = "$2" ] || { diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") | head -20 >&2; fail "${3:-tree changed}"; return 1; }
 }
 json_get() { jq -r "$2" "$1"; }

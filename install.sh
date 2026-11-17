@@ -66,7 +66,7 @@ PROJECT_DIR=""
 FULL_DIFF=0
 PRINT_FILE=""
 
-need_arg() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
+need_arg() { if [ $# -lt 2 ] || [ -z "$2" ]; then die "$1 needs a value"; fi; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent|--agents) need_arg "$@"; AGENTS_ARG="$2"; shift ;;
@@ -101,7 +101,7 @@ get_file() {
   if [ "$NAWALA_EMBEDDED" = "1" ]; then
     embedded_file "$1" || die "no embedded file $1"
   else
-    [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/$1" ] || die "missing $1 next to install.sh (run it from a checkout or use the release asset)"
+    if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/$1" ]; then die "missing $1 next to install.sh (run it from a checkout or use the release asset)"; fi
     cat "$SELF_DIR/$1"
   fi
 }
@@ -110,7 +110,7 @@ if [ -n "$PRINT_FILE" ]; then get_file "$PRINT_FILE"; exit 0; fi
 
 # ---- preflight ----------------------------------------------------------------------------
 [ "$(id -u)" != "0" ] || die "do not run as root (no sudo needed: everything goes into your home directory)"
-[ -n "${HOME:-}" ] && [ -d "$HOME" ] || die "HOME is not set"
+if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then die "HOME is not set"; fi
 command -v jq >/dev/null 2>&1 || die "jq is required (macOS: brew install jq; Debian/Ubuntu: apt install jq)"
 command -v diff >/dev/null 2>&1 || die "diff is required"
 umask 077
@@ -133,6 +133,9 @@ path_key() { printf '%s' "$1" | sha256 | cut -c1-24; }
 # shellcheck disable=SC2088 # a literal ~ is intended: it is only for display
 pretty() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
 
+octal_mode() { # portable octal permission bits of a path (GNU and BSD stat)
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"
+}
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/nawala-setup.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/plan"
@@ -406,7 +409,7 @@ write_config() { # dest agents
 # One row per change: agent kind path op arg existed restore sha_after
 #   restore = backup (file untouched since: uninstall restores the backup byte-for-byte)
 #           | surgical (file changed by someone else: uninstall removes only Nawala entries)
-manifest_rows() { [ -f "$MANIFEST" ] && cat "$MANIFEST" || true; }
+manifest_rows() { if [ -f "$MANIFEST" ]; then cat "$MANIFEST"; fi; }
 backup_path() { printf '%s/%s.orig' "$BACKUPS" "$(path_key "$1")"; }
 
 # ---- show the plan ------------------------------------------------------------------------
@@ -550,8 +553,11 @@ verify_token() {
 
 install_apply() {
   local path existed restore before after b agent kind op arg rows
-  [ -d "$NAWALA_DIR" ] || { mkdir -m 700 "$NAWALA_DIR"; NEW_NAWALA_DIR=1; }
+  local orig_dir_mode=""
+  if [ -d "$NAWALA_DIR" ] && [ ! -f "$MANIFEST" ]; then orig_dir_mode="$(octal_mode "$NAWALA_DIR")"; elif [ ! -d "$NAWALA_DIR" ]; then mkdir -m 700 "$NAWALA_DIR"; NEW_NAWALA_DIR=1; fi
   mkdir -p "$BACKUPS"; chmod 700 "$NAWALA_DIR" "$BACKUPS"
+  # remember the mode of a pre-existing ~/.nawala (old installer) so uninstall can put it back
+  if [ -n "$orig_dir_mode" ] && [ ! -f "$BACKUPS/.nawala-dir-mode" ]; then printf '%s\n' "$orig_dir_mode" >"$BACKUPS/.nawala-dir-mode"; fi
   touch "$MANIFEST"; chmod 600 "$MANIFEST"
   if [ "${NEW_NAWALA_DIR:-0}" = "1" ]; then printf 'core\tdir\t%s\t-\t-\t0\tbackup\t-\n' "$NAWALA_DIR" >>"$MANIFEST"; fi
 
@@ -649,7 +655,10 @@ do_uninstall() {
     if awk -F'\t' -v d="$NAWALA_DIR" '$2 == "dir" && $3 == d { f = 1 } END { exit !f }' "$MANIFEST"; then
       rm -rf "$BACKUPS" "$NAWALA_DIR/state" "$NAWALA_DIR/rules" "$NAWALA_DIR/spool.jsonl" "$NAWALA_DIR"/spool.jsonl.sending.* "$MANIFEST"
     else
+      local dir_mode=""
+      if [ -f "$BACKUPS/.nawala-dir-mode" ]; then dir_mode="$(cat "$BACKUPS/.nawala-dir-mode")"; fi
       rm -rf "$BACKUPS" "$MANIFEST"
+      case "$dir_mode" in [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) chmod "$dir_mode" "$NAWALA_DIR" ;; esac
     fi
   else
     mv "$newm" "$MANIFEST"
