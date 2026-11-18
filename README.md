@@ -20,8 +20,9 @@ Connects AI coding agents to [Nawala](https://nawala.skyshi.com), which tracks w
 with coding agents. One static, versioned, signed shell script:
 
 - adds the `nawala` MCP server (HTTP, `Authorization: Bearer` header) to your agent's user config;
-- adds lightweight hooks where the agent supports them (prompt, stop, session start/end) that send
-  activity metadata only: never prompts or any conversation content;
+- adds lightweight hooks where the agent supports them (prompt, stop, session start/end; for Claude
+  Code also file edits, path only) that send activity metadata only: never prompts or any
+  conversation content;
 - where the agent has a user-global instruction file, adds a marked block that asks the agent to
   report its intent itself through the Nawala MCP tools (`set_current_story` with a short title in
   its own words, then `report_progress` / `complete_story` with a one-line note).
@@ -36,7 +37,7 @@ what is sent and how to verify a release.
 Take `VERSION` and the `install.sh` SHA-256 from the [latest release](https://github.com/skyshi-labs/nawala-agent-setup/releases/latest) notes:
 
 ```sh
-VERSION=v0.1.2 SHA256=<sha256 of install.sh from the release notes>
+VERSION=v0.1.3 SHA256=<sha256 of install.sh from the release notes>
 curl -fsSLo nawala-install.sh "https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION/install.sh" \
   && echo "$SHA256  nawala-install.sh" | shasum -a 256 -c - \
   && bash nawala-install.sh --agent claude --url https://nawala.skyshi.com
@@ -75,7 +76,7 @@ Set up Nawala for this coding agent. Stop at the first step that fails.
 
 | Agent | MCP server | Hooks | Instruction block | Level |
 |---|---|---|---|---|
-| Claude Code | `~/.claude.json` | prompt, stop, start (+ project rules injected), end: `~/.claude/settings.json` | not needed | **Full hooks** |
+| Claude Code | `~/.claude.json` | prompt, stop, start (+ project rules injected), end, file edits (multi-repo workspaces): `~/.claude/settings.json` | not needed | **Full hooks** |
 | Codex (CLI, IDE, app) | `~/.codex/config.toml` | prompt, stop, start (+ rules), end: `~/.codex/hooks.json` (trust once with `/hooks`) | not needed | **Full hooks** |
 | Cursor | `~/.cursor/mcp.json` | prompt, stop, start (+ rules), end: `~/.cursor/hooks.json` | not needed | **Full hooks** |
 | Grok Build (xAI) | `~/.grok/config.toml` | prompt, stop, start, end: `~/.grok/hooks/nawala.json` | `~/.grok/rules/nawala.md` | **Partial** (no context injection) |
@@ -97,12 +98,35 @@ MCP tools.
 Work repos only. The hooks send something only when the repo's git remote matches your
 organisation's client rules or a repo of a project you are a member of. The hook fetches that list
 from the server (`GET /v1/tracking`, cached 15 minutes in `~/.nawala/tracking.json`) and decides on
-your machine, so personal and internal repos are never sent, not even their name. A repo without a
-git remote is never tracked, and when the list cannot be fetched and there is no cached copy, nothing
-is sent.
+your machine, so personal and internal repos are never sent, not even their name. The same list
+holds the local folders you linked to a project: a repo (or, from v0.1.3, a folder that is not a git
+repo) inside a linked folder is tracked too. A folder without a git remote is tracked only through
+such a link, and when the list cannot be fetched and there is no cached copy, nothing is sent.
 
 - Opt one repo out: `git config nawala.off true` (inside that repo).
 - Pause everything: `export NAWALA_OFF=1`.
+
+### Chats that were already open
+
+The hooks only see sessions that start after the install. Restart (or resume) chats that were
+already running. Nothing is backfilled: earlier turns are not sent, and chat content never is.
+
+### Multi-repo workspaces (Claude Code, v0.1.3+)
+
+You open a workspace folder that is not a git repo and add the repos as additional working
+directories (e.g. `D:\Work\Client` with `api/` and `web/` inside it):
+
+- Each turn is recorded under the linked repo the agent last edited (with Edit/Write), and on stop
+  the new commits are sent per edited repo.
+- The prompt of a turn before any edit is recorded only if the workspace folder itself is linked
+  with `scope=parent`. A parent link covers every repo beneath it, so link the workspace folder,
+  not a shared parent that also holds personal repos.
+- Commits made only through Bash in a repo the agent never edited with Edit/Write are not picked up.
+- Claude Code only. Existing installs: re-run the installer once to add the new `PostToolUse` entry
+  (file edits) to `~/.claude/settings.json`.
+- Privacy: Claude's `PostToolUse` input contains the edited file's contents. The hook reads only the
+  file path from it, to find that file's git root. Nothing from that input is sent or stored, except
+  the root folder of a tracked repo, locally in `~/.nawala/state/`.
 
 ## Uninstall
 

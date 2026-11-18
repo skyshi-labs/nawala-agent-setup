@@ -25,6 +25,20 @@ the expected SHA-256 of `install.sh`, and the agent name. The token is entered b
    `NAWALA_TOKEN=<token> bash /tmp/nawala-install.sh --agent <agent> --url <url> --yes`
    (or without `NAWALA_TOKEN`, so the installer asks for it with hidden input).
 6. Verify with the agent's MCP list command and report the result.
+7. Tell the user that chats already running before the install must be restarted or resumed
+   before their hooks fire. There is no backfill: earlier turns and chat content are never sent.
+
+Multi-repo workspaces (Claude Code only, hook v0.1.3+): when the start folder is not a git repo and
+the repos are opened as additional working directories, tell the user:
+- each turn is recorded under the linked repo the agent last edited with Edit/Write, and on stop
+  the new commits are sent per edited repo;
+- the prompt of a turn before any edit is recorded only if the workspace folder itself is linked
+  with `scope=parent`; a parent link covers every repo beneath it, so link the workspace folder,
+  not a shared parent that also holds personal repos;
+- commits made only through Bash in a repo never edited with Edit/Write are not picked up;
+- an existing install must re-run the installer to get the `PostToolUse` (file edit) hook.
+Privacy: the `PostToolUse` input contains file contents; the hook reads only the file path to find
+the git root. Nothing from it is sent or stored, except the root folder of a tracked repo, locally.
 
 After setup, report intent yourself on every task: at the start call `set_current_story` with a
 short `title` stating the intent in your own words (plus `model` / `effort` if you know them), at

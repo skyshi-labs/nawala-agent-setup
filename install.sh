@@ -27,7 +27,7 @@
 # than the ones listed by --dry-run. The only network call is GET <url>/api/auth/me.
 set -euo pipefail
 
-NAWALA_SETUP_VERSION="0.1.2"
+NAWALA_SETUP_VERSION="0.1.3"
 REPO="skyshi-labs/nawala-agent-setup"
 ALL_AGENTS="claude codex cursor kiro antigravity opencode grok muse"
 

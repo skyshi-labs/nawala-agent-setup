@@ -96,7 +96,7 @@ test_other_mcp_entries_and_hooks_are_preserved() {
   assert_eq "$(json_get "$HOME/.claude/settings.json" '.model')" "opus"
   assert_eq "$(json_get "$HOME/.claude/settings.json" '[.hooks.Stop[].hooks[].command] | map(select(. == "say done")) | length')" "1"
   assert_eq "$(json_get "$HOME/.claude/settings.json" '.hooks.PreToolUse[0].hooks[0].command')" "~/bin/guard.sh"
-  assert_eq "$(json_get "$HOME/.claude/settings.json" '[.hooks[][].hooks[].command | select(test("nawala"))] | length')" "4"
+  assert_eq "$(json_get "$HOME/.claude/settings.json" '[.hooks[][].hooks[].command | select(test("nawala"))] | length')" "5"
   # codex
   grep -q '^\[mcp_servers.docs\]' "$HOME/.codex/config.toml" || fail "codex docs server lost"
   grep -q '^model = "gpt-5-codex"' "$HOME/.codex/config.toml" || fail "codex model lost"
@@ -173,7 +173,7 @@ test_legacy_install_is_upgraded_and_restored() {
   before="$(snapshot)"
   install_sh --agent claude --url "$URL" --yes
   assert_contains "$OUT" "legacy"
-  assert_eq "$(json_get "$HOME/.claude/settings.json" '[.hooks[][].hooks[].command | select(test("nawala"))] | length')" "4"
+  assert_eq "$(json_get "$HOME/.claude/settings.json" '[.hooks[][].hooks[].command | select(test("nawala"))] | length')" "5"
   assert_eq "$(json_get "$HOME/.claude/settings.json" '.hooks.UserPromptSubmit[0].hooks[0].command | endswith("prompt --agent claude")')" "true"
   cmp -s "$HOME/.nawala/hook.sh" "$HOOK" || fail "hook.sh not replaced"
   install_sh --uninstall --yes
@@ -271,4 +271,31 @@ test_installed_hook_runs_end_to_end() {
   [ -f "$HOME/.nawala/tracking.json" ] || fail "hook did not cache the tracking list"
   install_sh --uninstall --yes
   [ ! -e "$HOME/.nawala" ] || fail "~/.nawala left behind after the hook ran: $(ls -A "$HOME/.nawala")"
+}
+
+test_claude_posttooluse_hook_is_merged_and_removed() {
+  local before
+  new_home existing
+  # the user's own PostToolUse hook must survive install and uninstall
+  jq '.hooks.PostToolUse = [{"matcher": "Write", "hooks": [{"type": "command", "command": "~/bin/fmt.sh"}]}]' \
+    "$HOME/.claude/settings.json" >"$HOME/x" && cat "$HOME/x" >"$HOME/.claude/settings.json" && rm -f "$HOME/x"
+  before="$(snapshot)"
+  install_sh --agent claude --url "$URL" --yes
+  assert_eq "$(json_get "$HOME/.claude/settings.json" '[.hooks.PostToolUse[] | select(any(.hooks[]; .command | test("nawala"))) | [.matcher, .hooks[0].timeout, (.hooks[0].command | endswith("hook.sh touch --agent claude"))] | @tsv] | join("|")')" \
+    "Edit|Write|MultiEdit|NotebookEdit	5	true" "PostToolUse entry"
+  assert_eq "$(json_get "$HOME/.claude/settings.json" '.hooks.PostToolUse[0].hooks[0].command')" "~/bin/fmt.sh" "user PostToolUse hook lost"
+  assert_eq "$(json_get "$HOME/.claude/settings.json" '.hooks.PreToolUse[0].hooks[0].command')" "~/bin/guard.sh"
+  # other agents do not get a touch hook
+  install_sh --agent codex,cursor,grok --url "$URL" --yes
+  assert_eq "$(cat "$HOME/.codex/hooks.json" "$HOME/.cursor/hooks.json" "$HOME/.grok/hooks/nawala.json" | grep -c 'touch --agent' || true)" "0"
+  install_sh --uninstall --yes
+  assert_same_tree "$before" "$(snapshot)" "uninstall did not restore the PostToolUse hooks"
+  # an install made before v0.1.3 (no PostToolUse entry) gets it by re-running the installer
+  new_home
+  install_sh --agent claude --url "$URL" --yes
+  jq 'del(.hooks.PostToolUse)' "$HOME/.claude/settings.json" >"$HOME/x" && cat "$HOME/x" >"$HOME/.claude/settings.json" && rm -f "$HOME/x"
+  install_sh --agent claude --url "$URL" --yes
+  assert_eq "$(json_get "$HOME/.claude/settings.json" '[.hooks.PostToolUse[].hooks[].command | select(test("touch --agent claude"))] | length')" "1" "re-run did not add PostToolUse"
+  install_sh --uninstall --yes
+  [ ! -e "$HOME/.claude/settings.json" ] || assert_eq "$(json_get "$HOME/.claude/settings.json" '[.. | .command? // empty | select(test("nawala"))] | length')" "0"
 }

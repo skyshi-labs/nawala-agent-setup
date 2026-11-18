@@ -12,7 +12,7 @@ hook() { # mode agent fixture [extra args] ; stdout in $OUT
   printf '%s\n' "$OUT" >>"$ALL_OUTPUT"
 }
 
-ALLOWED_KEYS='["agent","clientTs","clientVersion","commits","cwd","dedupeKey","effort","git","hookSource","id","model","sessionId","type"]'
+ALLOWED_KEYS='["agent","clientTs","clientVersion","commits","cwd","dedupeKey","effort","git","hookSource","id","model","repos","sessionId","type"]'
 
 test_normalisation_per_agent_from_fixtures() {
   local fixture agent mode exp_agent exp_sid exp_cwd exp_prompt user_prompt exp_model exp_effort n=0
@@ -36,7 +36,7 @@ test_normalisation_per_agent_from_fixtures() {
       || fail "unexpected keys ($fixture): $(printf '%s' "$OUT" | jq -c keys)"
     case "$exp_prompt" in -|"") ;; *) assert_not_contains "$OUT" "$exp_prompt" "prompt text in the event ($fixture)" ;; esac
     printf '%s' "$OUT" | jq -e '.id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")' >/dev/null || fail "bad id"
-    printf '%s' "$OUT" | jq -e '(.dedupeKey | length) == 32 and (.git | type) == "object" and .clientVersion == "0.1.2"' >/dev/null || fail "shape ($fixture)"
+    printf '%s' "$OUT" | jq -e '(.dedupeKey | length) == 32 and (.git | type) == "object" and .clientVersion == "0.1.3"' >/dev/null || fail "shape ($fixture)"
     n=$((n + 1))
   done <"$FIX/hooks/expected.tsv"
   [ "$n" -ge 13 ] || fail "only $n fixtures checked"

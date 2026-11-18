@@ -16,14 +16,14 @@ Always:
 | `~/.nawala/config` (0600) | `NAWALA_URL`, `NAWALA_TOKEN`, `NAWALA_AGENTS` |
 | `~/.nawala/hook.sh` (0700) | the `hook.sh` of the release, embedded in `install.sh` (never downloaded) |
 | `~/.nawala/manifest.tsv`, `~/.nawala/backups/` | what was changed + the original files, for `--uninstall` |
-| `~/.nawala/state/`, `~/.nawala/rules/`, `~/.nawala/tracking.json`, `~/.nawala/spool.jsonl` | created later by the hook: per-session last HEAD, dedupe keys, cached project rules, cached list of tracked repo prefixes, events waiting for the server (max 10 MB, same allow-listed fields as below) |
+| `~/.nawala/state/`, `~/.nawala/rules/`, `~/.nawala/tracking.json`, `~/.nawala/spool.jsonl` | created later by the hook: per-session last HEAD (per repo), the root folders of the tracked repos each Claude Code session edited, dedupe keys, cached project rules, cached list of tracked repo prefixes, events waiting for the server (max 10 MB, same allow-listed fields as below) |
 
 Per agent (only for the agents you pass with `--agent`):
 
 | Agent | Files | Change |
 |---|---|---|
 | Claude Code | `~/.claude.json` | `mcpServers.nawala` (type http, url, Authorization header) |
-| | `~/.claude/settings.json` | one entry each in `hooks.UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd` running `~/.nawala/hook.sh <mode> --agent claude` |
+| | `~/.claude/settings.json` | one entry each in `hooks.UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd` running `~/.nawala/hook.sh <mode> --agent claude`, and one in `PostToolUse` (matcher `Edit\|Write\|MultiEdit\|NotebookEdit`) running `~/.nawala/hook.sh touch --agent claude` |
 | Codex | `~/.codex/config.toml` | `[mcp_servers.nawala]` between `# nawala:start` / `# nawala:end` |
 | | `~/.codex/hooks.json` | same four hook events (Codex asks you to trust them via `/hooks`) |
 | Cursor | `~/.cursor/mcp.json` | `mcpServers.nawala` |
@@ -72,11 +72,15 @@ internal repos are never sent: no event, no rules request, not even the remote n
 - The match runs on this machine: the remote is normalised (`git@GitLab.com:Org/Repo.git` ->
   `gitlab.com/org/repo`, same rules as the server) and matches a prefix when it equals it or
   starts with it followed by `/`.
-- Not tracked: no git remote; `git config nawala.off true` in the repo (per-repo opt-out); a
-  remote that matches no prefix.
+- The same answer lists the local folders you linked to a project (`paths`). A folder inside one
+  of them is tracked even when its remote matches no prefix, or when it has no remote or is not a
+  git repo at all (a multi-repo workspace folder; hook v0.1.3+). Same rule: equal, or below it
+  (case-insensitive, `\` and `/` alike).
+- Not tracked: `git config nawala.off true` in the repo (per-repo opt-out); a remote that matches
+  no prefix outside a linked folder; no git remote outside a linked folder.
 - If the list cannot be fetched, the cached copy is used whatever its age; with no cached copy,
   nothing is sent (fail closed). A server too old to have `/v1/tracking` (404) gets events as
-  before.
+  before, for repos with a remote only.
 - `NAWALA_OFF=1` still pauses everything.
 
 For a tracked repo the hooks (agents with hooks only) send, in the background with a 3 s timeout,
@@ -89,14 +93,24 @@ For a tracked repo the hooks (agents with hooks only) send, in the background wi
   100 / 30 characters): Claude Code `model` (session start) and effort level, Codex `model`,
   Cursor `model_id` and the `effort` model parameter, Antigravity `modelName`;
 - on stop: `commits`, your new commits on the branch as metadata: sha, author email, date,
-  parents, and per changed file its path with added/deleted line counts.
+  parents, and per changed file its path with added/deleted line counts;
+- on stop, Claude Code multi-repo workspaces only: `repos`, one entry (`cwd`, `git`, `commits`,
+  same shapes as above) per other tracked repo the session edited that has new commits (max 20).
+
+Which folder `cwd` and `git` describe: the session's start folder when it is a tracked git repo;
+otherwise the tracked repo the Claude Code session edited last; otherwise the start folder when it
+is inside a linked folder (then the `git` fields are empty); otherwise nothing is sent.
 
 **Never sent, spooled or printed: prompts and any conversation content.** No prompt text, no
 transcript, no assistant message, no raw hook payload, no commit message (not even the subject
 line), no file contents, diffs or environment variables. The event is built from an allow-list
 (`clean_event` in `hook.sh`); the agent's hook input is read only to find the session id, the
 working directory, the model/effort and a turn id (the prompt is used only as a one-way hash, on
-this machine, to drop duplicate hook runs). Nawala learns what you are working on only
+this machine, to drop duplicate hook runs). Claude Code's `PostToolUse` input (file edits) also
+contains the file's contents, the old/new text and the tool's response: the hook reads only the
+file path from it, to find that file's git root, and sends nothing for it. For a tracked repo it
+stores that root folder (one line per session in `~/.nawala/state/`, 0600); for any other path it
+stores nothing. Nawala learns what you are working on only
 from what the agent itself reports through the MCP tools (`set_current_story` with a short title
 of the intent, `report_progress` / `complete_story` with a one-line note); the installed
 instruction blocks tell the agent never to put secrets or your raw prompt in them.
@@ -104,8 +118,8 @@ instruction blocks tell the agent never to put secrets or your raw prompt in the
 Events spooled by v0.1.0 (which sent prompts) are re-built with the same allow-list on the next
 hook run, in any repo, before they are sent or kept; lines that are not valid JSON are dropped.
 
-On session start the hook calls `GET <url>/v1/rules?remote=<git remote>&sessionId=...&agent=...`
-(2 s timeout) and gives the project's rules to agents that support context injection.
+On session start the hook calls `GET <url>/v1/rules?remote=<git remote>&sessionId=...&agent=...&cwd=...&root=...`
+(2 s timeout; `remote` / `root` left out for a linked folder that is not a git repo) and gives the project's rules to agents that support context injection.
 
 The MCP server (`<url>/mcp`) receives only what the agent passes to the Nawala tools.
 
@@ -138,7 +152,7 @@ installer's output (masked as `nwl_****`), or in the dry run.
 Download the assets of the release you want (replace the version):
 
 ```sh
-VERSION=v0.1.2
+VERSION=v0.1.3
 base="https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION"
 for f in install.sh install.sh.sigstore.json SHA256SUMS SHA256SUMS.sigstore.json; do curl -fsSLO "$base/$f"; done
 ```

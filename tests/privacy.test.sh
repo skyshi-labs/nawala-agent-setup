@@ -3,7 +3,7 @@
 # payload or commit message ever reaches a request body, the spool, any file under ~/.nawala or
 # --print-event. Old (v0.1.0) spool lines are re-built before they are sent or kept.
 
-PV_KEYS='["agent","clientTs","clientVersion","commits","cwd","dedupeKey","effort","git","hookSource","id","model","sessionId","type"]'
+PV_KEYS='["agent","clientTs","clientVersion","commits","cwd","dedupeKey","effort","git","hookSource","id","model","repos","sessionId","type"]'
 OLD_MARK="OLDSPOOL-MARKER" # in tests/fixtures/spool-v0.1.0.jsonl (written by the v0.1.0 hook)
 
 pv_home() {
@@ -38,7 +38,9 @@ pv_assert_no_leak() { # mark
 }
 
 pv_assert_allowed_keys() { # file of events (one per line, or {events:[...]} batches)
-  jq -e --argjson ok "$PV_KEYS" '(.events // [.]) | all(.[]; (keys - $ok) == [] and ((.commits // []) | all(.[]; has("message") | not)))' "$1" >/dev/null \
+  jq -e --argjson ok "$PV_KEYS" '(.events // [.]) | all(.[]; (keys - $ok) == []
+      and ([(.commits // [])[], ((.repos // [])[] | .commits[])] | all(.[]; has("message") | not))
+      and ((.repos // []) | all(.[]; (keys - ["cwd","git","commits"]) == [])))' "$1" >/dev/null \
     || { fail "event outside the allow-list: $(head -c 400 "$1")"; return 1; }
 }
 
@@ -172,3 +174,66 @@ test_commit_messages_are_never_read_or_sent() {
 }
 
 calls_to() { grep -c -e "$1" "$FAKE_CURL_LOG" || true; }
+
+# Claude PostToolUse (`touch`) carries the edited file's contents, old/new strings and the tool
+# response. Only the path is used (to find the git root); none of the rest reaches a request,
+# the spool, any file under ~/.nawala or stdout - for tracked and untracked repos alike.
+test_posttooluse_payload_is_never_sent_stored_or_printed() {
+  local ws f code
+  pv_home
+  ws="$HOME/ws"; mkdir -p "$ws"
+  pv_repo "$ws/work"; new_repo "$ws/mine" "$PERSONAL_REMOTE"
+  for code in 202 503; do
+    for f in "$ws/work/src/app.js" "$ws/mine/src/app.js" "$ws/notes.md"; do
+      jq -c --arg c "$ws" --arg f "$f" '.cwd = $c | .tool_input.file_path = $f | .tool_response.filePath = $f' \
+        "$FIX/hooks/claude-posttooluse.json" >"$HOME/touch.json"
+      OUT="$(NAWALA_HOOK_SYNC=1 bash "$HOOK" touch --agent claude <"$HOME/touch.json" 2>&1)"
+      printf '%s\n' "$OUT" >>"$ALL_OUTPUT"
+      assert_eq "$OUT" "" "touch printed something"
+      OUT="$(bash "$HOOK" touch --agent claude --print-event <"$HOME/touch.json" 2>&1)"
+      assert_eq "$OUT" "" "touch --print-event printed something"
+    done
+    # the turn is then sent under the edited work repo (and spooled when the server is down)
+    for f in prompt stop; do
+      OUT="$(jq -c --arg c "$ws" --arg t "$f-$code" '{session_id: .session_id, cwd: $c, prompt_id: $t}' "$FIX/hooks/claude-posttooluse.json" \
+        | FAKE_EVENTS_CODE=$code NAWALA_HOOK_SYNC=1 bash "$HOOK" "$f" --agent claude 2>&1)"
+      printf '%s\n' "$OUT" >>"$ALL_OUTPUT"
+      assert_not_contains "$OUT" "NWL-SENTINEL" "sentinel on stdout ($f)"
+    done
+  done
+  assert_eq "$(grep -c . "$HOME/.nawala/state/claude-sess-1.repos")" "1" "work repo not recorded"
+  grep -q -e '/mine' -e 'notes' "$HOME/.nawala/state/claude-sess-1.repos" && fail "untracked path recorded"
+  [ "$(grep -c '"type":"prompt"' "$FAKE_CURL_BODIES")" -ge 2 ] || fail "turn not sent under the edited repo"
+  [ -s "$HOME/.nawala/spool.jsonl" ] || fail "nothing spooled with the server down"
+  pv_assert_no_leak "NWL-SENTINEL"
+  pv_assert_no_leak "app.js"
+  pv_assert_allowed_keys "$FAKE_CURL_BODIES"
+  pv_assert_allowed_keys "$HOME/.nawala/spool.jsonl"
+}
+
+test_repos_entries_are_allow_listed_and_scrubbed_in_the_spool() {
+  local before
+  pv_home
+  # a stop event as an old or tampered spool line: unknown keys, a commit message, a password in a
+  # remote, an entry without commits and 25 entries (max 20 are kept)
+  jq -nc '{id: "0b6f2c1e-1111-4222-8333-444455556666", type: "stop", sessionId: "s",
+      repos: ([{cwd: "/w/a", note: "OLDSPOOL-MARKER",
+                git: {remote: "https://dev:hunter2pass@gitlab.com/acme/a.git", branch: "main", x: "OLDSPOOL-MARKER"},
+                commits: [{sha: "3096b4971fdc7a142451e29e1a9334e8578ef6d4", message: "OLDSPOOL-MARKER",
+                           files: [{path: "a.txt", additions: 1, deletions: 0, patch: "OLDSPOOL-MARKER"}]}]},
+               {cwd: "/w/empty", commits: []}, "OLDSPOOL-MARKER"]
+             + [range(24) | {cwd: "/w/n\(.)", commits: [{sha: "3096b4971fdc7a142451e29e1a9334e8578ef6d4"}]}])}' \
+    >"$HOME/.nawala/spool.jsonl"
+  new_repo "$HOME/mine" "$PERSONAL_REMOTE"
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent claude <"$(in_repo "$FIX/hooks/claude-prompt.json" "$HOME/mine")"
+  pv_assert_no_leak "OLDSPOOL-MARKER"
+  pv_assert_no_leak "hunter2pass"
+  pv_assert_allowed_keys "$HOME/.nawala/spool.jsonl"
+  assert_eq "$(jq -c '.repos[0]' "$HOME/.nawala/spool.jsonl")" \
+    '{"cwd":"/w/a","git":{"remote":"https://dev:[REDACTED]@gitlab.com/acme/a.git","branch":"main","head":null,"root":null},"commits":[{"sha":"3096b4971fdc7a142451e29e1a9334e8578ef6d4","authorEmail":null,"authoredAt":null,"parents":[],"files":[{"path":"a.txt","additions":1,"deletions":0}]}]}'
+  assert_eq "$(jq '.repos | length' "$HOME/.nawala/spool.jsonl")" "20" "repos capped / empty entries dropped"
+  # already clean: left byte-identical
+  before="$(hash_file "$HOME/.nawala/spool.jsonl")"
+  NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent claude <"$(in_repo "$FIX/hooks/claude-prompt.json" "$HOME/mine")"
+  assert_eq "$(hash_file "$HOME/.nawala/spool.jsonl")" "$before" "clean spool with repos rewritten"
+}

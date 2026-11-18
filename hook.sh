@@ -1,25 +1,44 @@
 #!/usr/bin/env bash
 # Nawala hook (nawala-agent-setup) - one script for every supported coding agent.
 #
-#   usage: hook.sh <prompt|stop|start|end> [--agent <name>] [--print-event]
+#   usage: hook.sh <prompt|stop|start|end|touch> [--agent <name>] [--print-event]
 #          (the agent's hook JSON arrives on stdin)
 #
 #   --agent        claude|codex|cursor|kiro|antigravity|opencode|grok|muse (default: claude,
 #                  which keeps hooks written by the legacy installer working)
-#   --print-event  build the event and print it to stdout; send nothing, write no state
-#                  (use it to audit exactly what would leave your machine)
+#   --print-event  build the event and print it to stdout; send nothing, write no state, no
+#                  network (the tracking check uses the cached list only; without a cache every
+#                  folder counts as tracked). Use it to audit exactly what would leave your machine
+#
+# Modes: start/prompt/stop/end send one event each. `touch` (Claude PostToolUse on
+# Edit|Write|MultiEdit|NotebookEdit) sends nothing: it reads only the edited file's path from the
+# payload (tool_input.file_path / notebook_path; the file contents, old/new strings and tool
+# response in the same payload are only held in memory, never stored or printed), finds that file's git root and,
+# only when that repo is tracked, appends the root to ~/.nawala/state/<session>.repos. This is
+# how multi-repo workspaces work: the start folder is not a git repo, the repos are opened as
+# additional working directories.
 #
 # Contract:
 #  - always exits 0 and never blocks the agent for long; NAWALA_OFF=1 disables everything
 #  - work repos only: nothing is sent (no event, no rules request) unless the repo's git remote
-#    matches a prefix from GET /v1/tracking (cached in ~/.nawala/tracking.json for 15 min).
-#    No remote, `git config nawala.off true`, or no list (server down, no cache) = nothing sent
+#    matches a prefix from GET /v1/tracking (cached in ~/.nawala/tracking.json for 15 min), or
+#    the folder is inside a local folder linked to a project (`paths` of the same list).
+#    `git config nawala.off true`, or no list (server down, no cache) = nothing sent. A folder
+#    without a remote is only sent through `paths`; an old server without /v1/tracking (404)
+#    still needs a remote
+#  - which folder an event describes (its `cwd` and `git`): the start folder when it is a
+#    tracked git repo; else the tracked repo this session last edited (`touch`); else the start
+#    folder when it is inside a linked folder (git fields null); else nothing is sent
 #  - stdout is empty, except on `start` for agents that document context injection
 #    (claude, codex, cursor, kiro): the project's rules are printed in that agent's format
 #  - activity metadata only: no prompt text, no transcript, no assistant message, no raw hook
 #    payload and no commit messages are ever sent, spooled or printed. Every event is built from
 #    an allow-list of fields (clean_event below); the developer's intent reaches Nawala only
 #    through the agent's own MCP calls (set_current_story / report_progress / complete_story)
+#  - event fields: id, type, clientTs, sessionId, agent, hookSource, dedupeKey, clientVersion,
+#    cwd, git {remote, branch, head, root}, model, effort; on `stop` also commits[] (the event's
+#    repo) and repos[] ({cwd, git, commits[]} for every OTHER tracked repo this session edited
+#    that has new commits; max 20). Commits: sha, author email, date, parents, per-file counts
 #  - the remaining strings (cwd, git remote/branch/root, commit file paths) are still scrubbed
 #    for secrets on this machine as defence in depth (see scrub_* below)
 #  - sending happens in the background; if the server is unreachable the event is spooled
@@ -32,11 +51,11 @@
 #              NAWALA_URL / NAWALA_TOKEN (override the config file),
 #              NAWALA_HOOK_SYNC=1 (run in the foreground; for debugging and tests)
 
-NAWALA_HOOK_VERSION="0.1.2"
+NAWALA_HOOK_VERSION="0.1.3"
 
 MODE="${1:-}"
 [ "${NAWALA_OFF:-0}" = "1" ] && exit 0
-case "$MODE" in prompt|stop|start|end) shift ;; *) exit 0 ;; esac
+case "$MODE" in prompt|stop|start|end|touch) shift ;; *) exit 0 ;; esac
 
 AGENT="claude"
 PRINT_EVENT=0
@@ -162,16 +181,22 @@ def clean_commit:
     parents: [ (.parents // []) | if type == "array" then .[] else empty end | sha | strings ],
     files: [ (.files // []) | if type == "array" then .[] else empty end | objects
              | { path: (.path | text), additions: (.additions | scalar), deletions: (.deletions | scalar) } ] };
+def clean_git: (objects // {}) | { remote: (.remote | text), branch: (.branch | text),
+                                   head: (.head | text), root: (.root | text) };
+def clean_commits: [ (. // []) | if type == "array" then .[] else empty end | objects | clean_commit ];
+# stop, multi-repo workspaces: the commits of the other repos the session edited
+def clean_repo: { cwd: (.cwd | text), git: (.git | clean_git), commits: (.commits | clean_commits) };
 def clean_event:
   { id: (.id | scalar), type: (.type | scalar), clientTs: (.clientTs | scalar),
     sessionId: (.sessionId | scalar), agent: (.agent | scalar), hookSource: (.hookSource | scalar),
     dedupeKey: (.dedupeKey | scalar), clientVersion: (.clientVersion | scalar),
     cwd: (.cwd | text),
-    git: ((.git | objects) // {} | { remote: (.remote | text), branch: (.branch | text),
-                                       head: (.head | text), root: (.root | text) }) }
+    git: (.git | clean_git) }
   + opt("model"; .model | meta(100)) + opt("effort"; .effort | meta(30))
-  + ( [ (.commits // []) | if type == "array" then .[] else empty end | objects | clean_commit ]
-      | if length > 0 then { commits: . } else {} end );
+  + ( .commits | clean_commits | if length > 0 then { commits: . } else {} end )
+  + ( [ (.repos // []) | if type == "array" then .[] else empty end | objects | clean_repo
+        | select(.commits | length > 0) ] | .[0:20]
+      | if length > 0 then { repos: . } else {} end );
 '
 
 # ---- normalise the agent payload ----------------------------------------------------------
@@ -260,18 +285,30 @@ ensure_session() { # sets SESSION_ID (fallback when the agent sent none); 1 when
   [ -n "$SESSION_ID" ]
 }
 
+# describe_dir dir: sets GIT_ROOT / GIT_REMOTE / GIT_BRANCH / GIT_HEAD for dir (all empty when
+# dir is not inside a git repo). Every folder the hook looks at goes through here.
 GIT_REMOTE=""; GIT_BRANCH=""; GIT_HEAD=""; GIT_ROOT=""
-git_info() {
-  [ -d "$CWD" ] && command -v git >/dev/null 2>&1 || return 0
-  GIT_ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)"
+describe_dir() {
+  GIT_REMOTE=""; GIT_BRANCH=""; GIT_HEAD=""; GIT_ROOT=""
+  [ -n "$1" ] && [ -d "$1" ] && command -v git >/dev/null 2>&1 || return 0
+  GIT_ROOT="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null </dev/null)"
   [ -n "$GIT_ROOT" ] || return 0
-  GIT_REMOTE="$(git -C "$CWD" remote get-url origin 2>/dev/null)"
+  GIT_REMOTE="$(git -C "$1" remote get-url origin 2>/dev/null </dev/null)"
   if [ -z "$GIT_REMOTE" ]; then
-    local first; first="$(git -C "$CWD" remote 2>/dev/null | head -n 1)"
-    [ -n "$first" ] && GIT_REMOTE="$(git -C "$CWD" remote get-url "$first" 2>/dev/null)"
+    local first; first="$(git -C "$1" remote 2>/dev/null </dev/null | head -n 1)"
+    [ -n "$first" ] && GIT_REMOTE="$(git -C "$1" remote get-url "$first" 2>/dev/null </dev/null)"
   fi
-  GIT_BRANCH="$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  GIT_HEAD="$(git -C "$CWD" rev-parse HEAD 2>/dev/null)"
+  GIT_BRANCH="$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null </dev/null)"
+  GIT_HEAD="$(git -C "$1" rev-parse HEAD 2>/dev/null </dev/null)"
+}
+
+# Folder identity for comparisons: "\" -> "/", lower case, no trailing slashes (git on Windows
+# prints D:/x/y, agents may send D:\x\y).
+root_key() {
+  local k="${1//\\//}"
+  k="$(printf '%s' "$k" | tr 'A-Z' 'a-z')"
+  while [ "${k%/}" != "$k" ]; do k="${k%/}"; done
+  printf '%s' "$k"
 }
 
 # curl with the bearer token in a 0600 temp file (-H @file) so it never shows up in `ps`
@@ -363,8 +400,16 @@ cwd_in_tracking_paths() { # cwd file
 
 # Prints "list" (use $TRACKING_CACHE), "all" (server predates /v1/tracking: send as before)
 # or "none" (no usable list: send nothing). Refreshes the cache when it is older than 15 min.
+# --print-event never uses the network: the cache of any age, else "any" (everything counts).
+# `touch` runs in the foreground on every edit: a cache of any age, fetched only when there is none
+# (prompt/stop refresh it in the background and re-check every repo before anything is sent).
 tracking_list() {
   local tmp code=""
+  if [ "$PRINT_EVENT" = "1" ]; then
+    if valid_tracking_list "$TRACKING_CACHE"; then echo list; else echo any; fi
+    return 0
+  fi
+  if [ "$MODE" = "touch" ] && valid_tracking_list "$TRACKING_CACHE"; then echo list; return 0; fi
   if valid_tracking_list "$TRACKING_CACHE" \
     && [ -n "$(find "$TRACKING_CACHE" -mmin "-$TRACKING_MAX_AGE_MIN" 2>/dev/null)" ]; then
     echo list; return 0
@@ -385,18 +430,75 @@ tracking_list() {
   fi
 }
 
-# 0 when events for this repo may be sent. Needs git_info first.
-is_tracked() {
-  local key list
-  [ -n "$GIT_REMOTE" ] || return 1
-  [ "$(git -C "$CWD" config --bool --get nawala.off 2>/dev/null)" = "true" ] && return 1
-  key="$(normalize_remote "$GIT_REMOTE")" || key=""
-  list="$(tracking_list)"
-  case "$list" in
-    all) return 0 ;;
-    list) { [ -n "$key" ] && key_in_tracking_list "$key" "$TRACKING_CACHE"; } || cwd_in_tracking_paths "$CWD" "$TRACKING_CACHE" ;;
+# The list is decided once per hook run (a down server must not cost 2s per folder).
+TRACKING_MODE=""
+tracking_mode() { [ -n "$TRACKING_MODE" ] || TRACKING_MODE="$(tracking_list)"; }
+
+# is_tracked_dir dir: 0 when events for dir may be sent. Needs describe_dir dir first.
+#  - git repo with `nawala.off`: never (checked before any network)
+#  - list: the remote matches a prefix, or dir is inside a linked folder (`paths`); a folder
+#    without a remote (not a git repo, or no remote) can only match `paths`
+#  - all (old server, 404): needs a remote, as before; none (no usable list): never
+is_tracked_dir() {
+  local key=""
+  if [ -n "$GIT_ROOT" ] && [ "$(git -C "$1" config --bool --get nawala.off 2>/dev/null </dev/null)" = "true" ]; then
+    return 1
+  fi
+  [ -n "$GIT_REMOTE" ] && { key="$(normalize_remote "$GIT_REMOTE")" || key=""; }
+  tracking_mode
+  case "$TRACKING_MODE" in
+    all) [ -n "$GIT_REMOTE" ] ;;
+    list) { [ -n "$key" ] && key_in_tracking_list "$key" "$TRACKING_CACHE"; } || cwd_in_tracking_paths "$1" "$TRACKING_CACHE" ;;
+    any) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# ---- which folder an event describes ----------------------------------------------------------
+# Repos this session edited (`touch`), one root per line, append-only. Read with the agent's own
+# session id only (a fallback id is never created just to look).
+repos_file() { printf '%s/state/%s.repos' "$NAWALA_DIR" "$(safe_name "$SESSION_ID")"; }
+touched_roots() { # most recent first, deduplicated (case-insensitive, "\" = "/", trailing / ignored), max 50
+  local f
+  [ -n "$SESSION_ID" ] || return 0
+  f="$(repos_file)"
+  [ -f "$f" ] || return 0
+  awk '{ l[NR] = $0 }
+    END { n = 0
+      for (i = NR; i > 0 && n < 50; i--) {
+        r = l[i]; k = tolower(r); gsub(/\\/, "/", k); sub(/\/+$/, "", k)
+        if (r == "" || (k in seen)) continue
+        seen[k] = 1; n++; print r
+      } }' "$f" 2>/dev/null
+}
+
+# resolve_target: decides the folder this event describes and sets EV_CWD / EV_REMOTE / EV_BRANCH
+# / EV_HEAD / EV_ROOT (and CWD_ROOT, the start folder's git root). 1 = send nothing.
+#   1. the start folder is a tracked git repo                -> the start folder (as before)
+#   2. the tracked repo this session edited most recently    -> that repo's root
+#   3. the start folder is inside a linked folder (`paths`)  -> the start folder, git fields empty
+EV_CWD=""; EV_REMOTE=""; EV_BRANCH=""; EV_HEAD=""; EV_ROOT=""; CWD_ROOT=""
+set_target() { # cwd ; from the current GIT_* values
+  EV_CWD="$1"; EV_REMOTE="$GIT_REMOTE"; EV_BRANCH="$GIT_BRANCH"; EV_HEAD="$GIT_HEAD"; EV_ROOT="$GIT_ROOT"
+}
+resolve_target() {
+  local root
+  describe_dir "$CWD"
+  CWD_ROOT="$GIT_ROOT"
+  if [ -n "$CWD_ROOT" ] && is_tracked_dir "$CWD"; then set_target "$CWD"; return 0; fi
+  while IFS= read -r root <&3; do
+    [ -n "$root" ] || continue
+    describe_dir "$root"
+    if [ -z "$GIT_ROOT" ] || [ "$(root_key "$GIT_ROOT")" != "$(root_key "$root")" ]; then continue; fi
+    if is_tracked_dir "$GIT_ROOT"; then set_target "$GIT_ROOT"; return 0; fi
+  done 3<<EOF
+$(touched_roots)
+EOF
+  if [ -z "$CWD_ROOT" ]; then
+    describe_dir ""
+    if is_tracked_dir "$CWD"; then set_target "$CWD"; return 0; fi
+  fi
+  return 1
 }
 
 # ---- spool hygiene --------------------------------------------------------------------------
@@ -441,19 +543,22 @@ context_format() {
   esac
 }
 
+# Needs resolve_target: the rules are those of the folder the events describe (a linked
+# workspace folder without a remote gets them too: the server resolves it from cwd / root).
 print_rules() {
-  [ -n "$GIT_REMOTE" ] || return 0
   local fmt; fmt="$(context_format)"
   [ "$fmt" = "none" ] && return 0
   local rules_dir="$NAWALA_DIR/rules" index resp code body pid md key
   index="$rules_dir/index.tsv"
   (umask 077; mkdir -p "$rules_dir") 2>/dev/null || return 0
   # the folder decides the project (folder links), so the offline cache is per remote + folder
-  key="$GIT_REMOTE|$CWD"
+  key="$EV_REMOTE|$EV_CWD"
   auth_file || return 0
-  resp="$(curl -sS -m 2 -G -w '\n%{http_code}' -H @"$AUTH_FILE" \
-    --data-urlencode "remote=$GIT_REMOTE" --data-urlencode "sessionId=$SESSION_ID" \
-    --data-urlencode "agent=$REAL_AGENT" --data-urlencode "cwd=$CWD" --data-urlencode "root=$GIT_ROOT" \
+  local args=()
+  [ -n "$EV_REMOTE" ] && args=(--data-urlencode "remote=$EV_REMOTE")
+  [ -n "$EV_ROOT" ] && args=(${args[@]+"${args[@]}"} --data-urlencode "root=$EV_ROOT")
+  resp="$(curl -sS -m 2 -G -w '\n%{http_code}' -H @"$AUTH_FILE" ${args[@]+"${args[@]}"} \
+    --data-urlencode "sessionId=$SESSION_ID" --data-urlencode "agent=$REAL_AGENT" --data-urlencode "cwd=$EV_CWD" \
     "$URL/v1/rules" 2>/dev/null)"
   cleanup_auth
   code="$(printf '%s' "$resp" | tail -n 1)"
@@ -488,11 +593,46 @@ if [ "$MODE" = "prompt" ] && [ "$AGENT" = "cursor" ] && [ "$PRINT_EVENT" != "1" 
   printf '{"continue":true}\n'
 fi
 
+# ---- PostToolUse (Claude, `touch`): remember which tracked repo the agent edits ------------
+# Foreground (Stop reads the record right after), silent, sends nothing. Only the edited file's
+# path is taken from the payload; nothing else of it is kept. Untracked repo or no repo: nothing
+# is written (the tracking cache aside, as in every mode). Kept cheap: no spool work here (the
+# other modes tidy the spool in the background), the tracking cache is used whatever its age.
+touch_main() {
+  local p dir parent i=0 f root
+  umask 077
+  p="$(printf '%s' "$INPUT" | jq -r '.tool_input | objects | (.file_path // .notebook_path) | strings' 2>/dev/null | head -n 1)"
+  INPUT=""; NORM=""
+  [ -n "$p" ] || return 0
+  p="${p//\\//}"
+  case "$p" in */*) dir="${p%/*}" ;; *) dir="." ;; esac
+  [ -n "$dir" ] || dir="/"
+  case "$dir" in /*|[A-Za-z]:*) ;; *) dir="${CWD//\\//}/$dir" ;; esac
+  while [ ! -d "$dir" ]; do # the file (or its folder) may be gone: walk up to a folder that exists
+    i=$((i + 1)); [ "$i" -le 64 ] || return 0
+    parent="${dir%/*}"
+    if [ -z "$parent" ] || [ "$parent" = "$dir" ]; then return 0; fi
+    dir="$parent"
+  done
+  describe_dir "$dir"
+  root="$GIT_ROOT"
+  [ -n "$root" ] || return 0
+  is_tracked_dir "$root" || return 0
+  ensure_session || return 0
+  mkdir -p "$NAWALA_DIR/state" 2>/dev/null || return 0
+  f="$(repos_file)"
+  [ "$(tail -n 1 "$f" 2>/dev/null)" = "$root" ] && return 0
+  printf '%s\n' "$root" >>"$f" # one short line, O_APPEND: parallel tool calls cannot interleave
+}
+if [ "$MODE" = "touch" ]; then
+  [ "$PRINT_EVENT" = "1" ] || ( touch_main ) </dev/null >/dev/null 2>&1
+  exit 0
+fi
+
 # SessionStart decides in the foreground (the rules must be printed now); the other events
-# decide in the background. Untracked repo: stop here, send nothing, write no state.
+# decide in the background. Nothing to describe: stop here, send nothing, write no state.
 if [ "$MODE" = "start" ] && [ "$PRINT_EVENT" != "1" ]; then
-  git_info
-  if ! is_tracked; then ( umask 077; tidy_spool ) </dev/null >/dev/null 2>&1; exit 0; fi
+  if ! resolve_target; then ( umask 077; tidy_spool ) </dev/null >/dev/null 2>&1; exit 0; fi
   ensure_session || exit 0
   print_rules
 fi
@@ -537,23 +677,28 @@ antigravity_new_prompt() {
 }
 
 # ---- commits on stop ------------------------------------------------------------------------
-# Commits on the current branch since the last head this hook saw for this session (first time:
-# last 24h by the author, max 50). Metadata only: sha, author email, date, parents, per-file
-# line counts. The commit message (subject included) is never read. git gets 1s; on timeout no
-# commits are sent.
-collect_commits() {
-  [ -n "$GIT_ROOT" ] && [ -n "$GIT_HEAD" ] || return 0
-  local state last out pid i email
-  state="$NAWALA_DIR/state/$(safe_name "$SESSION_ID").head"
-  last="$(cat "$state" 2>/dev/null)"
-  [ "$last" = "$GIT_HEAD" ] && return 0
+# Commits on the current branch of a repo since the last head this hook saw for this session in
+# that repo (first time: last 24h by the author, max 50). Metadata only: sha, author email, date,
+# parents, per-file line counts. The commit message (subject included) is never read. git gets
+# 1s; on timeout no commits are sent. The last head is kept per session and repo root
+# (state/<session>.<sha256(root)[:16]>.head); the start folder's repo also reads the
+# <session>.head of hooks before v0.1.3, so a running session does not resend its history.
+head_state_file() { # root
+  printf '%s/state/%s.%s.head' "$NAWALA_DIR" "$(safe_name "$SESSION_ID")" "$(root_key "$1" | sha256 | cut -c1-16)"
+}
+collect_commits() { # dir head statefile [legacy statefile] -> prints a JSON file (array), or nothing
+  local dir="$1" head="$2" last out pid i email
+  [ -n "$dir" ] && [ -n "$head" ] || return 0
+  last="$(cat "$3" 2>/dev/null)"
+  [ -z "$last" ] && [ -n "${4:-}" ] && last="$(cat "$4" 2>/dev/null)"
+  [ "$last" = "$head" ] && return 0
   out="$(mktemp "${TMPDIR:-/tmp}/nawala.git.XXXXXX")" || return 0
-  if [ -n "$last" ] && git -C "$CWD" cat-file -e "$last^{commit}" 2>/dev/null; then
-    ( git -C "$CWD" log --no-color --numstat -n 50 --format='%H%x09%ae%x09%aI%x09%P' "$last..HEAD" >"$out" 2>/dev/null ) &
+  if [ -n "$last" ] && git -C "$dir" cat-file -e "$last^{commit}" 2>/dev/null; then
+    ( git -C "$dir" log --no-color --numstat -n 50 --format='%H%x09%ae%x09%aI%x09%P' "$last..$head" >"$out" 2>/dev/null ) &
   else
-    email="$(git -C "$CWD" config user.email 2>/dev/null)"
+    email="$(git -C "$dir" config user.email 2>/dev/null)"
     [ -n "$email" ] || { rm -f "$out"; return 0; }
-    ( git -C "$CWD" log --no-color --numstat -n 50 --since='24 hours ago' --author="$email" --format='%H%x09%ae%x09%aI%x09%P' HEAD >"$out" 2>/dev/null ) &
+    ( git -C "$dir" log --no-color --numstat -n 50 --since='24 hours ago' --author="$email" --format='%H%x09%ae%x09%aI%x09%P' "$head" >"$out" 2>/dev/null ) &
   fi
   pid=$!
   i=0
@@ -579,37 +724,95 @@ collect_commits() {
   [ -s "$json" ] && printf '%s' "$json"
 }
 
+# prepare_commits (stop only, main shell): COMMITS_FILE = commits of the event's repo; REPOS_FILE
+# = one {cwd, git, commits} line per OTHER tracked repo this session edited that has new
+# commits (max 20); HEAD_UPDATES = "statefile<TAB>head" lines, written once the event is built.
+COMMITS_FILE=""; REPOS_FILE=""; HEAD_UPDATES=""
+prepare_commits() {
+  local root state legacy pk f n=0
+  [ "$MODE" = "stop" ] || return 0
+  legacy="$NAWALA_DIR/state/$(safe_name "$SESSION_ID").head"
+  pk="$(root_key "$EV_ROOT")"
+  if [ -n "$EV_ROOT" ] && [ -n "$EV_HEAD" ]; then
+    state="$(head_state_file "$EV_ROOT")"
+    if [ "$pk" = "$(root_key "$CWD_ROOT")" ]; then
+      COMMITS_FILE="$(collect_commits "$EV_ROOT" "$EV_HEAD" "$state" "$legacy")"
+    else
+      COMMITS_FILE="$(collect_commits "$EV_ROOT" "$EV_HEAD" "$state")"
+    fi
+    HEAD_UPDATES="$state	$EV_HEAD"
+  fi
+  REPOS_FILE="$(mktemp "${TMPDIR:-/tmp}/nawala.repos.XXXXXX")" || { REPOS_FILE=""; return 0; }
+  while IFS= read -r root <&3; do
+    [ "$n" -lt 20 ] || break
+    [ -n "$root" ] || continue
+    [ -n "$pk" ] && [ "$(root_key "$root")" = "$pk" ] && continue
+    describe_dir "$root"
+    if [ -z "$GIT_ROOT" ] || [ -z "$GIT_HEAD" ] || [ "$(root_key "$GIT_ROOT")" != "$(root_key "$root")" ]; then continue; fi
+    is_tracked_dir "$GIT_ROOT" || continue
+    state="$(head_state_file "$GIT_ROOT")"
+    f="$(collect_commits "$GIT_ROOT" "$GIT_HEAD" "$state")"
+    HEAD_UPDATES="$HEAD_UPDATES
+$state	$GIT_HEAD"
+    [ -n "$f" ] || continue
+    if jq -e 'type == "array" and length > 0' "$f" >/dev/null 2>&1; then
+      jq -nc --arg cwd "$GIT_ROOT" --arg remote "$GIT_REMOTE" --arg branch "$GIT_BRANCH" --arg head "$GIT_HEAD" \
+        --arg root "$GIT_ROOT" --slurpfile commits "$f" '
+        def nn: if . == "" then null else . end;
+        { cwd: $cwd, git: { remote: ($remote|nn), branch: ($branch|nn), head: ($head|nn), root: ($root|nn) },
+          commits: $commits[0] }' >>"$REPOS_FILE" 2>/dev/null && n=$((n + 1))
+    fi
+    rm -f "$f"
+  done 3<<EOF
+$(touched_roots)
+EOF
+}
+cleanup_commits() { rm -f "$COMMITS_FILE" "$REPOS_FILE"; COMMITS_FILE=""; REPOS_FILE=""; }
+save_heads() {
+  local state head
+  while IFS="	" read -r state head; do
+    [ -n "$state" ] && [ -n "$head" ] && printf '%s\n' "$head" >"$state"
+  done <<EOF
+$HEAD_UPDATES
+EOF
+}
+
 # ---- build the event (allow-listed, scrubbed) ------------------------------------------------
 # Built from the hook's own variables only: the agent's raw payload ($INPUT) is not passed in.
+# Needs resolve_target (EV_*) and, on stop, prepare_commits.
 build_event() {
-  local id ts commitsfile="" event
+  local id ts event
   id="$(new_uuid)" || return 1
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  [ "$MODE" = "stop" ] && commitsfile="$(collect_commits)"
   event="$(jq -nc \
-    --arg id "$id" --arg type "$MODE" --arg ts "$ts" --arg cwd "$CWD" --arg sid "$SESSION_ID" \
+    --arg id "$id" --arg type "$MODE" --arg ts "$ts" --arg cwd "$EV_CWD" --arg sid "$SESSION_ID" \
     --arg agent "$REAL_AGENT" --arg hookSource "$AGENT" --arg dedupe "$DEDUPE_KEY" --arg ver "$NAWALA_HOOK_VERSION" \
-    --arg remote "$GIT_REMOTE" --arg branch "$GIT_BRANCH" --arg head "$GIT_HEAD" --arg root "$GIT_ROOT" \
-    --argjson norm "$NORM" --slurpfile commits "${commitsfile:-/dev/null}" "$EVENT_JQ"'
+    --arg remote "$EV_REMOTE" --arg branch "$EV_BRANCH" --arg head "$EV_HEAD" --arg root "$EV_ROOT" \
+    --argjson norm "$NORM" --slurpfile commits "${COMMITS_FILE:-/dev/null}" \
+    --slurpfile repos "${REPOS_FILE:-/dev/null}" "$EVENT_JQ"'
       def nn: if . == "" then null else . end;
       {
         id: $id, type: $type, clientTs: $ts, sessionId: $sid, agent: $agent, hookSource: $hookSource,
         dedupeKey: ($dedupe | nn), clientVersion: $ver, cwd: $cwd,
         git: { remote: ($remote|nn), branch: ($branch|nn), head: ($head|nn), root: ($root|nn) },
         model: $norm.model, effort: $norm.effort,
-        commits: (if $type == "stop" then ($commits[0] // []) else [] end)
+        commits: (if $type == "stop" then ($commits[0] // []) else [] end),
+        repos: (if $type == "stop" then $repos else [] end)
       } | clean_event
     ' 2>/dev/null)"
-  [ -n "$commitsfile" ] && rm -f "$commitsfile"
   [ -n "$event" ] || return 1
   printf '%s' "$event"
 }
 
+# --print-event: the same decision and event, from the cached tracking list only (no network);
+# when nothing would be sent, the start folder is printed as before so there is always output.
 if [ "$PRINT_EVENT" = "1" ]; then
-  git_info
+  if ! resolve_target; then describe_dir "$CWD"; CWD_ROOT="$GIT_ROOT"; set_target "$CWD"; fi
   ensure_session || exit 0
   DEDUPE_KEY="$(dedupe_key)"
+  prepare_commits
   build_event | jq . 2>/dev/null
+  cleanup_commits
   exit 0
 fi
 
@@ -618,8 +821,7 @@ nawala_main() {
   umask 077
   tidy_spool # before the tracking check: old spooled prompts go away in any repo
   if [ "$MODE" != "start" ]; then # start already decided in the foreground
-    git_info
-    is_tracked || return 0
+    resolve_target || return 0
     ensure_session || return 0
   fi
   mkdir -p "$NAWALA_DIR" "$NAWALA_DIR/state" 2>/dev/null || return 0
@@ -634,10 +836,10 @@ nawala_main() {
   done
 
   local event
-  event="$(build_event)" || return 0
-  if [ "$MODE" = "stop" ] && [ -n "$GIT_HEAD" ]; then
-    printf '%s\n' "$GIT_HEAD" >"$NAWALA_DIR/state/$(safe_name "$SESSION_ID").head"
-  fi
+  prepare_commits
+  event="$(build_event)" || { cleanup_commits; return 0; }
+  cleanup_commits
+  save_heads
 
   auth_file || return 0
   post() {
