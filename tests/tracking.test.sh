@@ -158,7 +158,12 @@ test_no_remote_or_no_repo_sends_nothing() {
   tr_event prompt "$HOME/local"
   tr_event prompt "$HOME/plain"
   assert_eq "$(sent)" "0" "events posted without a remote"
-  [ ! -s "$FAKE_CURL_LOG" ] || fail "network used without a remote: $(cat "$FAKE_CURL_LOG")"
+  # since v0.1.3 a folder without a remote may still be inside a linked folder (`paths`), so the
+  # tracking list (which carries no repo information) is fetched; nothing else is requested
+  assert_eq "$(calls /v1/events)" "0" "events requested without a remote"
+  assert_eq "$(calls /v1/rules)" "0" "rules requested without a remote"
+  ! grep -q -v '/v1/tracking' "$FAKE_CURL_LOG" || fail "network used without a remote: $(cat "$FAKE_CURL_LOG")"
+  assert_eq "$(nawala_tree)" "$(printf '.\n./config')" "state written without a remote"
 }
 
 test_old_server_404_sends_as_before() {

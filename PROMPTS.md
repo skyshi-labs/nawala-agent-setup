@@ -4,7 +4,7 @@ Fill in the placeholders, then paste the block for your agent:
 
 - `{{URL}}`: your Nawala server, e.g. `https://nawala.skyshi.com` (staging: `https://nawala.project.skyshi.io`)
 - `{{TOKEN}}`: your personal token `nwl_...` from the Nawala web app
-- `{{VERSION}}`: the release tag, e.g. `v0.1.2`
+- `{{VERSION}}`: the release tag, e.g. `v0.1.3`
 - `{{SHA256}}`: the SHA-256 of `install.sh`, from that release's notes (also in its `SHA256SUMS`)
 
 About the token: whatever you paste into a chat goes to the agent's model provider and stays in the

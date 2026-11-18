@@ -15,6 +15,9 @@ JSON fragments are merged with `jq` (other entries kept). TOML fragments are app
 - `claude/mcp.json` -> `~/.claude.json` at `mcpServers.nawala`. Verified (`type: http`, `headers`).
 - `claude/hooks.json` -> `~/.claude/settings.json` under `hooks` (one matcher group per event,
   `timeout` in seconds). Verified. `SessionStart` output: `hookSpecificOutput.additionalContext`.
+  `PostToolUse` (matcher `Edit|Write|MultiEdit|NotebookEdit`, 5 s) runs `hook.sh touch`: it reads
+  only `tool_input.file_path` / `notebook_path` to note which tracked repo the session edits
+  (multi-repo workspaces, hook v0.1.3+).
 
 ## codex (Codex CLI, IDE extension, app)
 - `codex/mcp.toml` -> `~/.codex/config.toml`. Verified keys `url`, `http_headers`.
