@@ -16,7 +16,7 @@ Always:
 | `~/.nawala/config` (0600) | `NAWALA_URL`, `NAWALA_TOKEN`, `NAWALA_AGENTS` |
 | `~/.nawala/hook.sh` (0700) | the `hook.sh` of the release, embedded in `install.sh` (never downloaded) |
 | `~/.nawala/manifest.tsv`, `~/.nawala/backups/` | what was changed + the original files, for `--uninstall` |
-| `~/.nawala/state/`, `~/.nawala/rules/`, `~/.nawala/tracking.json`, `~/.nawala/spool.jsonl` | created later by the hook: per-session last HEAD (per repo), the root folders of the tracked repos each Claude Code session edited, dedupe keys, cached project rules, cached list of tracked repo prefixes, events waiting for the server (max 10 MB, same allow-listed fields as below) |
+| `~/.nawala/state/`, `~/.nawala/rules/`, `~/.nawala/tracking.json`, `~/.nawala/spool.jsonl` | created later by the hook: per-session last HEAD (per repo), the root folders of the tracked repos each Claude Code / Cursor / OpenCode session edited, `last-run-<agent>` (one line: time, hook mode, outcome such as `sent:202` or `untracked`, hook version; written on every hook run, also in personal/untracked folders, but never with a folder, remote, session id or prompt; read by `install.sh --doctor`), dedupe keys, cached project rules, cached list of tracked repo prefixes, events waiting for the server (max 10 MB, same allow-listed fields as below) |
 
 Per agent (only for the agents you pass with `--agent`):
 
@@ -27,7 +27,7 @@ Per agent (only for the agents you pass with `--agent`):
 | Codex | `~/.codex/config.toml` | `[mcp_servers.nawala]` between `# nawala:start` / `# nawala:end` |
 | | `~/.codex/hooks.json` | same four hook events (Codex asks you to trust them via `/hooks`) |
 | Cursor | `~/.cursor/mcp.json` | `mcpServers.nawala` |
-| | `~/.cursor/hooks.json` | `beforeSubmitPrompt`, `stop`, `sessionStart`, `sessionEnd` |
+| | `~/.cursor/hooks.json` | `beforeSubmitPrompt`, `stop`, `sessionStart`, `sessionEnd`, and `afterFileEdit` running `~/.nawala/hook.sh touch --agent cursor` (reads only `file_path`) |
 | Kiro | `~/.kiro/settings/mcp.json` | `mcpServers.nawala` |
 | | `~/.kiro/steering/nawala.md` | new file: instruction block (`inclusion: always`) |
 | | `~/.kiro/hooks/nawala.json` | only with `--experimental` |
@@ -35,6 +35,7 @@ Per agent (only for the agents you pass with `--agent`):
 | | `~/.gemini/GEMINI.md` | block between `<!-- nawala:start -->` / `<!-- nawala:end -->` |
 | OpenCode | `~/.config/opencode/opencode.json` | `mcp.servers.nawala` (type remote) |
 | | `~/.config/opencode/AGENTS.md` | marked block |
+| | `~/.config/opencode/plugins/nawala.js` | new file, OpenCode 2.x only: the Nawala plugin. It runs `~/.nawala/hook.sh <mode> --agent opencode` (on Windows through Git Bash) with the session id, folder, model id, a message/turn id and, for file edits, the edited file's path. Never the prompt text, the reply, tool output or file contents |
 | Grok Build | `~/.grok/config.toml` | `[mcp_servers.nawala]` between markers |
 | | `~/.grok/hooks/nawala.json` | new file: four hook events |
 | | `~/.grok/rules/nawala.md` | new file: instruction block |
@@ -91,14 +92,14 @@ For a tracked repo the hooks (agents with hooks only) send, in the background wi
 - `cwd`, and `git`: remote URL, branch, HEAD commit and repository root;
 - `model` and `effort`, only when the agent's hook input documents them (metadata, clipped to
   100 / 30 characters): Claude Code `model` (session start) and effort level, Codex `model`,
-  Cursor `model_id` and the `effort` model parameter, Antigravity `modelName`;
+  Cursor `model_id` and the `effort` model parameter, Antigravity `modelName`, OpenCode `<provider>/<model>` (from the plugin);
 - on stop: `commits`, your new commits on the branch as metadata: sha, author email, date,
   parents, and per changed file its path with added/deleted line counts;
-- on stop, Claude Code multi-repo workspaces only: `repos`, one entry (`cwd`, `git`, `commits`,
+- on stop, multi-repo workspaces (Claude Code, Cursor, OpenCode): `repos`, one entry (`cwd`, `git`, `commits`,
   same shapes as above) per other tracked repo the session edited that has new commits (max 20).
 
 Which folder `cwd` and `git` describe: the session's start folder when it is a tracked git repo;
-otherwise the tracked repo the Claude Code session edited last; otherwise the start folder when it
+otherwise the tracked repo the session edited last (Claude Code, Cursor, OpenCode); otherwise the start folder when it
 is inside a linked folder (then the `git` fields are empty); otherwise nothing is sent.
 
 **Never sent, spooled or printed: prompts and any conversation content.** No prompt text, no
@@ -108,7 +109,8 @@ line), no file contents, diffs or environment variables. The event is built from
 working directory, the model/effort and a turn id (the prompt is used only as a one-way hash, on
 this machine, to drop duplicate hook runs). Claude Code's `PostToolUse` input (file edits) also
 contains the file's contents, the old/new text and the tool's response: the hook reads only the
-file path from it, to find that file's git root, and sends nothing for it. For a tracked repo it
+file path from it, to find that file's git root, and sends nothing for it (the same for Cursor's
+`afterFileEdit`, which carries the edits' old/new text). The OpenCode plugin passes only the path. For a tracked repo it
 stores that root folder (one line per session in `~/.nawala/state/`, 0600); for any other path it
 stores nothing. Nawala learns what you are working on only
 from what the agent itself reports through the MCP tools (`set_current_story` with a short title

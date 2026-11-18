@@ -36,7 +36,7 @@ test_normalisation_per_agent_from_fixtures() {
       || fail "unexpected keys ($fixture): $(printf '%s' "$OUT" | jq -c keys)"
     case "$exp_prompt" in -|"") ;; *) assert_not_contains "$OUT" "$exp_prompt" "prompt text in the event ($fixture)" ;; esac
     printf '%s' "$OUT" | jq -e '.id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")' >/dev/null || fail "bad id"
-    printf '%s' "$OUT" | jq -e '(.dedupeKey | length) == 32 and (.git | type) == "object" and .clientVersion == "0.1.3"' >/dev/null || fail "shape ($fixture)"
+    printf '%s' "$OUT" | jq -e '(.dedupeKey | length) == 32 and (.git | type) == "object" and .clientVersion == "0.1.4"' >/dev/null || fail "shape ($fixture)"
     n=$((n + 1))
   done <"$FIX/hooks/expected.tsv"
   [ "$n" -ge 13 ] || fail "only $n fixtures checked"
@@ -192,4 +192,25 @@ test_garbage_input_is_ignored() {
   assert_eq "$OUT" "rc=0"
   OUT="$(printf '{}' | bash "$HOOK" bogus --agent claude; echo "rc=$?")"
   assert_eq "$OUT" "rc=0"
+}
+
+# hook v0.1.4: ~/.nawala/state/last-run-<agent> tells `install.sh --doctor` whether an agent's hook
+# runs and what it decided. It must never hold a folder, remote, prompt or session id.
+test_last_run_marker_holds_no_content() {
+  local repo m
+  hook_home
+  repo="$HOME/work"; new_repo "$repo" "$WORK_REMOTE"
+  jq -c --arg c "$repo" '.cwd = $c' "$FIX/hooks/claude-prompt.json" | NAWALA_HOOK_SYNC=1 bash "$HOOK" prompt --agent claude >/dev/null 2>&1
+  m="$(cat "$HOME/.nawala/state/last-run-claude")"
+  printf '%s' "$m" | grep -Eq '^[0-9]+ prompt sent:2[0-9][0-9] 0\.1\.4$' || fail "work repo marker: [$m]"
+  repo="$HOME/personal"; new_repo "$repo" "$PERSONAL_REMOTE"
+  jq -c --arg c "$repo" '.cwd = $c' "$FIX/hooks/claude-prompt.json" | NAWALA_HOOK_SYNC=1 bash "$HOOK" stop --agent cursor >/dev/null 2>&1
+  m="$(cat "$HOME/.nawala/state/last-run-cursor")"
+  printf '%s' "$m" | grep -Eq '^[0-9]+ stop untracked 0\.1\.4$' || fail "personal repo marker: [$m]"
+  assert_not_contains "$(cat "$HOME"/.nawala/state/last-run-*)" "/" "a path in the marker"
+  # --print-event writes nothing
+  rm -f "$HOME"/.nawala/state/last-run-*
+  bash "$HOOK" prompt --agent claude --print-event <"$FIX/hooks/claude-prompt.json" >/dev/null 2>&1
+  ls "$HOME"/.nawala/state/last-run-* >/dev/null 2>&1 && fail "--print-event wrote a marker"
+  return 0
 }

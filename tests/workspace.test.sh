@@ -35,7 +35,7 @@ ws_touch() { # sid cwd file_path : Claude PostToolUse (Edit); stdout in $OUT
 ws_sent() { grep -c . "$FAKE_CURL_BODIES" || true; }
 ws_calls() { grep -c -e "$1" "$FAKE_CURL_LOG" || true; }
 ws_last() { tail -n 1 "$FAKE_CURL_BODIES" | jq -r "$1"; }
-ws_tree() { (cd "$HOME/.nawala" && find . -print | LC_ALL=C sort | grep -v '^\./tracking\.json$'); }
+ws_tree() { (cd "$HOME/.nawala" && find . -print | LC_ALL=C sort | grep -v -E '^\./(tracking\.json|state|state/last-run-[a-z]+)$'); }  # last-run-<agent>: local diagnostics, see test_last_run_marker_holds_no_content
 ws_sha16() { printf '%s' "$1" | tr 'A-Z' 'a-z' | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | cut -c1-16; }
 
 test_non_git_folder_inside_linked_paths_sends_with_git_null() {
@@ -230,4 +230,58 @@ test_print_event_shows_the_touched_repo_and_its_commits() {
   assert_eq "$(printf '%s' "$OUT" | jq -r '[.cwd, (.commits | length), .repos[0].cwd, (.repos[0].commits | length)] | @tsv')" "$b	1	$a	1"
   [ ! -s "$FAKE_CURL_LOG" ] || fail "--print-event used the network"
   [ -z "$(find "$HOME/.nawala/state" -name '*.head')" ] || fail "--print-event wrote head state"
+}
+
+# hook v0.1.4: Cursor afterFileEdit (top-level file_path) is a `touch`, so a Cursor workspace whose
+# first root is a plain parent folder (not linked, not a repo) still describes the edited repo.
+cursor_event() { # mode conv root [extra-jq] : one synchronous Cursor hook run; stdout in $OUT
+  OUT="$(jq -nc --arg s "$2" --arg c "$3" \
+      "{conversation_id: \$s, generation_id: (\"g-\" + (now | tostring)), hook_event_name: \"x\", workspace_roots: [\$c], prompt: \"hello\", model: \"auto\"} ${4:-}" \
+    | NAWALA_HOOK_SYNC=1 bash "$HOOK" "$1" --agent cursor 2>&1)"
+  printf '%s\n' "$OUT" >>"$ALL_OUTPUT"
+}
+test_cursor_after_file_edit_targets_the_edited_repo() {
+  local a
+  ws_home
+  mkdir -p "$HOME/ws"
+  ws_repo "$HOME/ws/a"
+  a="$(git -C "$HOME/ws/a" rev-parse --show-toplevel)"
+  cursor_event start c1 "$HOME/ws"
+  cursor_event prompt c1 "$HOME/ws"
+  assert_eq "$(ws_sent)" "0" "cursor events before any edit in an unlinked parent folder"
+  cursor_event touch c1 "$HOME/ws" "| .file_path = \"$HOME/ws/a/src/x.js\" | .edits = [{old_string: \"SECRET-OLD\", new_string: \"SECRET-NEW\"}]"
+  assert_eq "$OUT" "" "afterFileEdit must print nothing"
+  assert_eq "$(ws_sent)" "0" "touch must send nothing"
+  cursor_event stop c1 "$HOME/ws"
+  assert_eq "$(ws_sent)" "1"
+  assert_eq "$(ws_last '[.type, .agent, .sessionId, .cwd, .git.remote, .git.root] | @tsv')" "stop	cursor	c1	$a	$WORK_REMOTE	$a"
+  assert_not_contains "$(cat "$FAKE_CURL_BODIES" "$HOME"/.nawala/state/* 2>/dev/null)" "SECRET-" "edit contents left the payload"
+}
+
+# hook v0.1.4: the OpenCode plugin (templates/opencode/plugin.js) sends {sessionID, directory, model,
+# prompt_id | turn_id | tool_input.file_path}; never the prompt text.
+oc_event() { # mode sid dir [extra-jq] : what the plugin pipes into hook.sh
+  OUT="$(jq -nc --arg s "$2" --arg d "$3" "{sessionID: \$s, directory: \$d, model: \"openrouter/anthropic/claude-haiku-4.5\"} ${4:-}" \
+    | NAWALA_HOOK_SYNC=1 bash "$HOOK" "$1" --agent opencode 2>&1)"
+  printf '%s\n' "$OUT" >>"$ALL_OUTPUT"
+}
+test_opencode_plugin_payloads_become_opencode_events() {
+  local a
+  ws_home
+  mkdir -p "$HOME/ws"
+  ws_repo "$HOME/ws/a"
+  a="$(git -C "$HOME/ws/a" rev-parse --show-toplevel)"
+  oc_event start ses_1 "$HOME/ws/a"
+  oc_event prompt ses_1 "$HOME/ws/a" '| .prompt_id = "msg_1"'
+  oc_event prompt ses_1 "$HOME/ws/a" '| .prompt_id = "msg_1"'   # same message twice: one event
+  oc_event stop ses_1 "$HOME/ws/a" '| .turn_id = "evt_1"'
+  assert_eq "$OUT" "" "the plugin ignores stdout, hook.sh must print nothing for opencode"
+  assert_eq "$(jq -r '.type' "$FAKE_CURL_BODIES" | tr '\n' ' ')" "start prompt stop "
+  assert_eq "$(ws_last '[.agent, .sessionId, .model, .cwd, .git.root] | @tsv')" "opencode	ses_1	openrouter/anthropic/claude-haiku-4.5	$a	$a"
+  # a workspace started in a plain parent folder: the edited repo (plugin touch) becomes the target
+  oc_event prompt ses_2 "$HOME/ws" '| .prompt_id = "msg_2"'
+  assert_eq "$(ws_sent)" "3" "opencode prompt in an unlinked parent folder"
+  oc_event touch ses_2 "$HOME/ws" "| .tool_input.file_path = \"$HOME/ws/a/b.txt\""
+  oc_event stop ses_2 "$HOME/ws" '| .turn_id = "evt_2"'
+  assert_eq "$(ws_last '[.type, .sessionId, .git.root] | @tsv')" "stop	ses_2	$a"
 }

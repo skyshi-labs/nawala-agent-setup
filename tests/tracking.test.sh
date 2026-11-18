@@ -15,7 +15,7 @@ tr_event() { # mode dir [agent]  one hook run (synchronous) for a Claude-style p
 }
 sent() { grep -c . "$FAKE_CURL_BODIES" || true; }       # events posted so far
 calls() { grep -c -e "$1" "$FAKE_CURL_LOG" || true; }   # requests to a path so far
-nawala_tree() { (cd "$HOME/.nawala" && find . -print | LC_ALL=C sort | grep -v '^\./tracking\.json$'); }
+nawala_tree() { (cd "$HOME/.nawala" && find . -print | LC_ALL=C sort | grep -v -E '^\./(tracking\.json|state|state/last-run-[a-z]+)$'); }  # last-run-<agent>: local diagnostics, see test_last_run_marker_holds_no_content
 hook_fn() { # load one function from hook.sh (two steps: bash 3.2 mis-parses it nested in "$(...)")
   local src
   src="$(sed -n "/^$1() {/,/^}/p" "$HOOK")"

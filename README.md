@@ -78,11 +78,11 @@ Set up Nawala for this coding agent. Stop at the first step that fails.
 |---|---|---|---|---|
 | Claude Code | `~/.claude.json` | prompt, stop, start (+ project rules injected), end, file edits (multi-repo workspaces): `~/.claude/settings.json` | not needed | **Full hooks** |
 | Codex (CLI, IDE, app) | `~/.codex/config.toml` | prompt, stop, start (+ rules), end: `~/.codex/hooks.json` (trust once with `/hooks`) | not needed | **Full hooks** |
-| Cursor | `~/.cursor/mcp.json` | prompt, stop, start (+ rules), end: `~/.cursor/hooks.json` | not needed | **Full hooks** |
+| Cursor | `~/.cursor/mcp.json` | prompt, stop, start (+ rules), end, file edits (multi-repo workspaces, v0.1.4+): `~/.cursor/hooks.json` | not needed | **Full hooks** |
 | Grok Build (xAI) | `~/.grok/config.toml` | prompt, stop, start, end: `~/.grok/hooks/nawala.json` | `~/.grok/rules/nawala.md` | **Partial** (no context injection) |
 | Kiro | `~/.kiro/settings/mcp.json` | experimental only (`--experimental`, CLI V3): `~/.kiro/hooks/nawala.json` | `~/.kiro/steering/nawala.md` | **MCP + instructions** |
 | Antigravity | `~/.gemini/config/mcp_config.json` | none (no prompt-submit event) | `~/.gemini/GEMINI.md` | **MCP + instructions** |
-| OpenCode | `~/.config/opencode/opencode.json` (`mcp.servers`) | none (plugin API is changing) | `~/.config/opencode/AGENTS.md` | **MCP + instructions** |
+| OpenCode 2.x | `~/.config/opencode/opencode.json` (`mcp.servers`) | prompt, stop, start, end, file edits through the Nawala plugin `~/.config/opencode/plugins/nawala.js` (v0.1.4+; OpenCode 1.x: none) | `~/.config/opencode/AGENTS.md` | **Full hooks** (no context injection: rules come from AGENTS.md) |
 | Muse Code (Meta) | `~/.config/muse/settings.json` (shape inferred, `mode: optional`) | none (format undocumented) | `<repo>/AGENTS.md` with `--project-dir <repo>` | **MCP + instructions** (unverified) |
 
 "Full hooks" means Nawala sees when each prompt is submitted and each turn finishes, session
@@ -106,12 +106,30 @@ such a link, and when the list cannot be fetched and there is no cached copy, no
 - Opt one repo out: `git config nawala.off true` (inside that repo).
 - Pause everything: `export NAWALA_OFF=1`.
 
+### "Terhubung sebagian" on the dashboard? Run the doctor
+
+`bash install.sh --doctor` (read-only) shows the installed hook.sh version (an outdated one is
+flagged), whether jq/curl/git are found, which agents have hooks registered, and what each agent's
+hook did last time it ran, e.g. `stop -> untracked` (the folder is not a work repo and not linked)
+or `prompt -> sent:202`. Every hook run (v0.1.4+) records that one line, and nothing else, in
+`~/.nawala/state/last-run-<agent>`. The doctor's only network call is `GET <url>/api/auth/me`.
+
+The dashboard says "Terhubung penuh" once any hook has talked to the server in the last 14 days,
+and "Terhubung sebagian" when only the MCP token was used. Typical causes of "sebagian":
+
+- an old hook.sh (before v0.1.3 a session that starts outside a git repo, e.g. a parent folder
+  with several repos, sent nothing at all, not even the check-in): re-run the installer;
+- OpenCode before v0.1.4 had no hooks at all: re-run the installer, then restart OpenCode
+  (`opencode service restart` when the background service runs);
+- Codex: the hooks were never approved with `/hooks`;
+- the agent was not restarted after the install.
+
 ### Chats that were already open
 
 The hooks only see sessions that start after the install. Restart (or resume) chats that were
 already running. Nothing is backfilled: earlier turns are not sent, and chat content never is.
 
-### Multi-repo workspaces (Claude Code, v0.1.3+)
+### Multi-repo workspaces (Claude Code v0.1.3+, Cursor and OpenCode v0.1.4+)
 
 You open a workspace folder that is not a git repo and add the repos as additional working
 directories (e.g. `D:\Work\Client` with `api/` and `web/` inside it):
@@ -122,8 +140,8 @@ directories (e.g. `D:\Work\Client` with `api/` and `web/` inside it):
   with `scope=parent`. A parent link covers every repo beneath it, so link the workspace folder,
   not a shared parent that also holds personal repos.
 - Commits made only through Bash in a repo the agent never edited with Edit/Write are not picked up.
-- Claude Code only. Existing installs: re-run the installer once to add the new `PostToolUse` entry
-  (file edits) to `~/.claude/settings.json`.
+- Claude Code (`PostToolUse`), Cursor (`afterFileEdit`) and OpenCode (the plugin's edit-tool hook).
+  Existing installs: re-run the installer once to add the file-edit entry.
 - Privacy: Claude's `PostToolUse` input contains the edited file's contents. The hook reads only the
   file path from it, to find that file's git root. Nothing from that input is sent or stored, except
   the root folder of a tracked repo, locally in `~/.nawala/state/`.
