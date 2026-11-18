@@ -12,6 +12,8 @@ TOKEN="nwl_TestTokenDoNotUse_0123456789abcdefghijKLMN"
 LEGACY_TOKEN="nwl_LegacyTokenDoNotUse_0123456789abcdefghij"
 URL="https://nawala.example.com"
 export PATH="$ROOT/tests/bin:$PATH"
+# the installer asks `opencode --version`; pin it so tests never depend on (or run) a local OpenCode
+export NAWALA_OPENCODE_VERSION="${NAWALA_OPENCODE_VERSION:-2.3.0}"
 # what the fake server's GET /v1/tracking returns unless a test sets FAKE_TRACKING_BODY
 export FAKE_TRACKING_DEFAULT='{"version":1,"prefixes":["github.com/acme/shop-api","gitlab.com/acme"]}'
 WORK_REMOTE="git@gitlab.com:acme/app.git"        # tracked by the default list

@@ -13,6 +13,8 @@
 #   --token TOKEN      personal API token nwl_... ; better: env NAWALA_TOKEN or the silent prompt
 #   --dry-run          print every file that would change (unified diff, token masked) and every
 #                      network call, then exit 0 without changing anything
+#   --doctor           read-only check: hook version, jq/curl, config, which agents have hooks
+#                      registered and what each agent's hook last did; one GET <url>/api/auth/me
 #   --uninstall        remove exactly what this installer added; restore backups when the file
 #                      was not changed since, otherwise remove only the Nawala entries
 #   --yes              do not ask for confirmation
@@ -27,7 +29,7 @@
 # than the ones listed by --dry-run. The only network call is GET <url>/api/auth/me.
 set -euo pipefail
 
-NAWALA_SETUP_VERSION="0.1.3"
+NAWALA_SETUP_VERSION="0.1.4"
 REPO="skyshi-labs/nawala-agent-setup"
 ALL_AGENTS="claude codex cursor kiro antigravity opencode grok muse"
 
@@ -65,6 +67,7 @@ EXPERIMENTAL=0
 PROJECT_DIR=""
 FULL_DIFF=0
 PRINT_FILE=""
+DOCTOR=0
 
 need_arg() { if [ $# -lt 2 ] || [ -z "$2" ]; then die "$1 needs a value"; fi; }
 while [ $# -gt 0 ]; do
@@ -77,6 +80,7 @@ while [ $# -gt 0 ]; do
     --token=*) TOKEN="${1#*=}" ;;
     --dry-run) DRY_RUN=1 ;;
     --uninstall) UNINSTALL=1 ;;
+    --doctor) DOCTOR=1 ;;
     --yes|-y) YES=1 ;;
     --experimental) EXPERIMENTAL=1 ;;
     --project-dir) need_arg "$@"; PROJECT_DIR="$2"; shift ;;
@@ -121,6 +125,17 @@ BACKUPS="$NAWALA_DIR/backups"
 HOOK_PATH="$NAWALA_DIR/hook.sh"
 CONFIG_PATH="$NAWALA_DIR/config"
 case "$HOOK_PATH" in *" "*) HOOK_CMD="\"$HOOK_PATH\"" ;; *) HOOK_CMD="$HOOK_PATH" ;; esac
+
+# Windows (Git Bash / MSYS): programs that are not shells (the OpenCode plugin) cannot run hook.sh
+# directly; they start the bash.exe this installer runs under. Empty on macOS and Linux.
+# NAWALA_TEST_UNAME lets the tests simulate Windows.
+WIN_BASH=""
+case "${NAWALA_TEST_UNAME:-$(uname -s 2>/dev/null)}" in
+  MINGW*|MSYS*|CYGWIN*)
+    if command -v cygpath >/dev/null 2>&1; then WIN_BASH="$(cygpath -w "$BASH" 2>/dev/null || true)"; fi
+    [ -n "$WIN_BASH" ] || WIN_BASH="$BASH" ;;
+esac
+json_str() { jq -n --arg v "$1" '$v'; }
 
 sha256() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
@@ -215,6 +230,8 @@ render_text() { # template
   s="${s//__NAWALA_MCP_URL__/$MCP_URL?agent=${1%%/*}}"
   s="${s//__NAWALA_URL__/$URL}"
   s="${s//__NAWALA_HOOK__/$HOOK_CMD}"
+  s="${s//__NAWALA_HOOK_JSON__/$(json_str "$HOOK_PATH")}"
+  s="${s//__NAWALA_BASH_JSON__/$(json_str "$WIN_BASH")}"
   printf '%s' "$s"
 }
 
@@ -317,6 +334,21 @@ plan_owned() { # agent path template
   plan_write "$path" "$new" 600
 }
 
+# Major version of the installed OpenCode ("" when unknown). NAWALA_OPENCODE_VERSION overrides (tests).
+opencode_major() {
+  local v="${NAWALA_OPENCODE_VERSION:-}"
+  if [ -z "$v" ] && command -v opencode >/dev/null 2>&1; then
+    # `opencode --version` creates log/cache folders in the home directory: give it a throw-away
+    # one so the installer still touches nothing but the files it lists (also on --dry-run)
+    local h="$WORK/opencode-home"
+    mkdir -p "$h"
+    v="$(HOME="$h" USERPROFILE="$h" XDG_CONFIG_HOME="$h/.config" XDG_DATA_HOME="$h/.local/share" \
+      XDG_CACHE_HOME="$h/.cache" XDG_STATE_HOME="$h/.local/state" opencode --version </dev/null 2>/dev/null | head -n 1)" || v=""
+  fi
+  v="$(printf '%s' "$v" | sed -nE 's/^[^0-9]*([0-9]+)\..*/\1/p')"
+  printf '%s' "$v"
+}
+
 TOML_CONFLICT='^[[:space:]]*\[[[:space:]]*mcp_servers\.("nawala"|nawala)[[:space:]]*\]'
 NOTES=""
 note() { NOTES="${NOTES}  - $*
@@ -361,7 +393,15 @@ plan_agent() {
       fi
       plan_json opencode "$oc" set '["mcp","servers","nawala"]' opencode/mcp.json
       plan_block opencode "$HOME/.config/opencode/AGENTS.md" md instructions.md
-      note "opencode: no plugin installed (plugin API is changing); tracking relies on AGENTS.md + MCP tools"
+      local ocv; ocv="$(opencode_major)"
+      if [ "$ocv" -ge 2 ] 2>/dev/null; then
+        plan_owned opencode "$HOME/.config/opencode/plugins/nawala.js" opencode/plugin.js
+        note "opencode: restart OpenCode (and \`opencode service restart\` if the background service runs) so the Nawala plugin loads"
+      elif [ -n "$ocv" ]; then
+        note "opencode: version $ocv found; the Nawala plugin needs OpenCode 2.x (run \`opencode upgrade\`, then re-run this installer). Until then tracking relies on AGENTS.md + MCP tools"
+      else
+        note "opencode: \`opencode\` is not on PATH, so its version is unknown and no plugin was installed. Re-run this installer from a terminal where \`opencode --version\` works. Until then tracking relies on AGENTS.md + MCP tools"
+      fi
       ;;
     grok)
       plan_block grok "$HOME/.grok/config.toml" toml grok/mcp.toml "$TOML_CONFLICT"
@@ -723,4 +763,101 @@ EOF
   fi
 }
 
+# ---- doctor (read-only) ---------------------------------------------------------------------
+# Why does the dashboard say "Terhubung sebagian" (MCP only)? Every hook run leaves
+# ~/.nawala/state/last-run-<agent> ("<epoch> <mode> <outcome> <hook version>"); this reads those
+# and the config. It writes nothing. Its one network call is GET /api/auth/me (token check); it
+# deliberately does not call /v1/tracking, which would mark the hook as seen on the server.
+doctor_hook_file() { # agent -> file that registers hook.sh for it (empty: this agent has no hooks)
+  case "$1" in
+    claude) echo "$HOME/.claude/settings.json" ;;
+    codex) echo "$HOME/.codex/hooks.json" ;;
+    cursor) echo "$HOME/.cursor/hooks.json" ;;
+    grok) echo "$HOME/.grok/hooks/nawala.json" ;;
+    opencode) echo "$HOME/.config/opencode/plugins/nawala.js" ;;
+    kiro) if [ -f "$HOME/.kiro/hooks/nawala.json" ]; then echo "$HOME/.kiro/hooks/nawala.json"; fi ;;
+    *) ;;
+  esac
+}
+doctor_explain() { # outcome
+  case "$1" in
+    sent:2??) echo "ok, the last event reached the server" ;;
+    spooled:*) echo "server unreachable (HTTP ${1#spooled:}); events are queued and retried" ;;
+    sent:401|sent:403) echo "token rejected (${1#sent:}); re-run the installer with a new token" ;;
+    sent:*) echo "server answered HTTP ${1#sent:}" ;;
+    untracked) echo "folder not tracked: not a work repo and not inside a linked folder (link it with the link_folder MCP tool, or edit a file in a work repo in that session)" ;;
+    no-tracking-list) echo "could not fetch the work-repo list (server down?) and no cache, nothing sent" ;;
+    no-config) echo "no URL/token in the Nawala config (~/.nawala/config); re-run the installer" ;;
+    no-jq) echo "jq is not on the agent's PATH; install jq (macOS: brew install jq)" ;;
+    no-curl) echo "curl is not on the agent's PATH" ;;
+    no-session) echo "the agent sent no session id and none could be made" ;;
+    duplicate) echo "ok, duplicate of an event already sent" ;;
+    started) echo "the hook ran but its background send never finished (the agent may stop background processes, or it is still running)" ;;
+    *) echo "$1" ;;
+  esac
+}
+doctor_col() { printf '  %-11s %s' "$1" "$2" | mask; printf '\n'; }
+do_doctor() {
+  local cfg_url="" cfg_token="" want_ver have_ver agents a f line ts mode outcome ver age now code body hdr
+  now="$(date +%s)"
+  say "Nawala doctor (agent setup $NAWALA_SETUP_VERSION)"
+  if [ -f "$CONFIG_PATH" ]; then
+    cfg_url="$(sed -n 's/^NAWALA_URL=//p' "$CONFIG_PATH" | tail -n 1)"
+    cfg_token="$(sed -n 's/^NAWALA_TOKEN=//p' "$CONFIG_PATH" | tail -n 1)"
+    doctor_col config "$(pretty "$CONFIG_PATH"): url=${cfg_url:-MISSING} token=$([ -n "$cfg_token" ] && echo set || echo MISSING)"
+  else
+    doctor_col config "MISSING ($(pretty "$CONFIG_PATH")): install first"
+  fi
+  want_ver="$(get_file hook.sh | sed -n 's/^NAWALA_HOOK_VERSION="\(.*\)"/\1/p' | head -n 1)"
+  have_ver="$(sed -n 's/^NAWALA_HOOK_VERSION="\(.*\)"/\1/p' "$HOOK_PATH" 2>/dev/null | head -n 1)"
+  if [ -z "$have_ver" ]; then doctor_col hook.sh "MISSING ($(pretty "$HOOK_PATH"))"
+  elif [ "$have_ver" = "$want_ver" ]; then doctor_col hook.sh "v$have_ver (current)"
+  else doctor_col hook.sh "v$have_ver OUTDATED (this installer ships v$want_ver): re-run the installer for your agents"
+  fi
+  for a in jq curl git; do
+    if command -v "$a" >/dev/null 2>&1; then doctor_col "$a" "$(command -v "$a")"; else doctor_col "$a" MISSING; fi
+  done
+  agents="$(sed -n 's/^NAWALA_AGENTS=//p' "$CONFIG_PATH" 2>/dev/null | tail -n 1 | tr ',' ' ')"
+  if [ -n "$AGENTS" ]; then agents="$AGENTS"; fi
+  say ""
+  say "Agents:"
+  [ -n "$agents" ] || say "  (none installed)"
+  for a in $agents; do
+    f="$(doctor_hook_file "$a")"
+    if [ -z "$f" ]; then say "  $a: no hooks for this agent (MCP + instructions only; the dashboard shows it as MCP-only)"; continue; fi
+    if [ -f "$f" ] && grep -q '\.nawala/hook\.sh' "$f" 2>/dev/null; then say "  $a: hooks registered in $(pretty "$f")"
+    else say "  $a: NO hooks in $(pretty "$f"); re-run the installer with --agent $a"; fi
+    if [ "$a" = "cursor" ] && [ -f "$f" ] && ! grep -q 'touch --agent cursor' "$f"; then
+      say "    afterFileEdit hook missing (needed for multi-repo workspaces); re-run the installer"
+    fi
+    line="$(cat "$NAWALA_DIR/state/last-run-$a" 2>/dev/null || true)"
+    if [ -z "$line" ]; then
+      say "    last run: none recorded (hook.sh older than v0.1.4, or the agent never ran it: restart the agent; codex: approve the hooks with /hooks)"
+      continue
+    fi
+    read -r ts mode outcome ver <<<"$line"
+    case "$ts" in ''|*[!0-9]*) ts="$now" ;; esac
+    age=$(( (now - ts) / 60 ))
+    say "    last run: $age min ago, $mode -> $outcome (hook v$ver): $(doctor_explain "$outcome")"
+  done
+  if [ -n "$cfg_url" ] && [ -n "$cfg_token" ] && command -v curl >/dev/null 2>&1; then
+    hdr="$(umask 077; mktemp "${TMPDIR:-/tmp}/nawala.auth.XXXXXX")"
+    printf 'Authorization: Bearer %s\n' "$cfg_token" >"$hdr"
+    body="$WORK/doctor-me.json"
+    code="$(curl -sS -m 10 -o "$body" -w '%{http_code}' -H @"$hdr" "${cfg_url%/}/api/auth/me" 2>/dev/null)" || code="000"
+    rm -f "$hdr"
+    say ""
+    case "$code" in
+      200) say "Server: token ok ($(jq -r '.user.email // .email // "account"' "$body" 2>/dev/null))" ;;
+      401|403) say "Server: token rejected (HTTP $code); re-run the installer with a new token" ;;
+      *) say "Server: GET ${cfg_url%/}/api/auth/me -> HTTP $code" ;;
+    esac
+  fi
+}
+
+if [ "$DOCTOR" = "1" ]; then
+  if [ -n "$AGENTS_ARG" ]; then parse_agents "$AGENTS_ARG"; fi
+  do_doctor
+  exit 0
+fi
 if [ "$UNINSTALL" = "1" ]; then do_uninstall; else do_install; fi

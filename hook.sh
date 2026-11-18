@@ -11,8 +11,9 @@
 #                  folder counts as tracked). Use it to audit exactly what would leave your machine
 #
 # Modes: start/prompt/stop/end send one event each. `touch` (Claude PostToolUse on
-# Edit|Write|MultiEdit|NotebookEdit) sends nothing: it reads only the edited file's path from the
-# payload (tool_input.file_path / notebook_path; the file contents, old/new strings and tool
+# Edit|Write|MultiEdit|NotebookEdit, Cursor afterFileEdit, the OpenCode plugin's edit tools) sends
+# nothing: it reads only the edited file's path from the payload (tool_input.file_path /
+# notebook_path, or a top-level file_path for Cursor; the file contents, old/new strings and tool
 # response in the same payload are only held in memory, never stored or printed), finds that file's git root and,
 # only when that repo is tracked, appends the root to ~/.nawala/state/<session>.repos. This is
 # how multi-repo workspaces work: the start folder is not a git repo, the repos are opened as
@@ -51,7 +52,7 @@
 #              NAWALA_URL / NAWALA_TOKEN (override the config file),
 #              NAWALA_HOOK_SYNC=1 (run in the foreground; for debugging and tests)
 
-NAWALA_HOOK_VERSION="0.1.3"
+NAWALA_HOOK_VERSION="0.1.4"
 
 MODE="${1:-}"
 [ "${NAWALA_OFF:-0}" = "1" ] && exit 0
@@ -70,17 +71,32 @@ while [ $# -gt 0 ]; do
 done
 case "$AGENT" in claude|codex|cursor|kiro|antigravity|opencode|grok|muse) ;; *) exit 0 ;; esac
 
-command -v jq >/dev/null 2>&1 || exit 0
-[ "$PRINT_EVENT" = "1" ] || command -v curl >/dev/null 2>&1 || exit 0
-
+# GUI apps started from the Dock/launcher (Cursor, OpenCode desktop) get a minimal PATH without
+# Homebrew; look there last so a jq/curl the user chose still wins.
+PATH="${PATH:+$PATH:}/opt/homebrew/bin:/usr/local/bin"
 NAWALA_DIR="${NAWALA_DIR:-$HOME/.nawala}"
+
+# Local diagnostics for `install.sh --doctor`: one line per agent in
+# ~/.nawala/state/last-run-<agent> = "<epoch> <mode> <outcome> <hook version>". Nothing else is
+# written (no payload, no folder, no prompt) and nothing of it is sent anywhere.
+mark_run() { # outcome
+  [ "$PRINT_EVENT" = "1" ] && return 0
+  [ -d "$NAWALA_DIR" ] || return 0
+  ( umask 077; mkdir -p "$NAWALA_DIR/state" \
+    && printf '%s %s %s %s\n' "$(date +%s)" "$MODE" "$1" "$NAWALA_HOOK_VERSION" >"$NAWALA_DIR/state/last-run-$AGENT" ) 2>/dev/null
+  return 0
+}
+
+command -v jq >/dev/null 2>&1 || { mark_run no-jq; exit 0; }
+[ "$PRINT_EVENT" = "1" ] || command -v curl >/dev/null 2>&1 || { mark_run no-curl; exit 0; }
+
 CONFIG="$NAWALA_DIR/config"
 SPOOL="$NAWALA_DIR/spool.jsonl"
 SPOOL_MAX_BYTES=10485760
 
 INPUT="$(cat 2>/dev/null)"
 [ -n "$INPUT" ] || INPUT='{}'
-printf '%s' "$INPUT" | jq -e 'type == "object"' >/dev/null 2>&1 || exit 0
+printf '%s' "$INPUT" | jq -e 'type == "object"' >/dev/null 2>&1 || { mark_run bad-input; exit 0; }
 
 # ---- config (parsed, never sourced) -------------------------------------------------------
 URL=""
@@ -92,7 +108,7 @@ fi
 URL="${NAWALA_URL:-$URL}"; URL="${URL%/}"
 TOKEN="${NAWALA_TOKEN:-$TOKEN}"
 if [ "$PRINT_EVENT" != "1" ]; then
-  [ -n "$TOKEN" ] && [ -n "$URL" ] || exit 0
+  [ -n "$TOKEN" ] && [ -n "$URL" ] || { mark_run no-config; exit 0; }
 fi
 
 # ---- helpers ------------------------------------------------------------------------------
@@ -216,6 +232,7 @@ def clean_event:
 #   codex:       model (active model slug)
 #   cursor:      model_id (else the legacy model slug), model_params[] {id:"effort"}.value
 #   antigravity: modelName
+#   opencode:    model ("<provider>/<model>", set by the Nawala plugin)
 NORMALISE_JQ='
 def s: if . == null then "" elif type == "string" then . else tostring end;
 def first_str(f): [f | select(. != null and . != "") | s] | first // "";
@@ -240,6 +257,7 @@ def first_str(f): [f | select(. != null and . != "") | s] | first // "";
       if $agent == "claude" or $agent == "codex" then first_str($in.model | strings)
       elif $agent == "cursor" then first_str(($in.model_id | strings), ($in.model | strings))
       elif $agent == "antigravity" then first_str($in.modelName | strings)
+      elif $agent == "opencode" then first_str($in.model | strings)
       else "" end),
     effort: (
       if $agent == "claude" then first_str(($in.effort | objects | .level | strings), $claudeEffort)
@@ -454,6 +472,9 @@ is_tracked_dir() {
   esac
 }
 
+# Outcome for mark_run when resolve_target found nothing to describe.
+untracked_reason() { if [ "$TRACKING_MODE" = "none" ]; then echo no-tracking-list; else echo untracked; fi; }
+
 # ---- which folder an event describes ----------------------------------------------------------
 # Repos this session edited (`touch`), one root per line, append-only. Read with the agent's own
 # session id only (a fallback id is never created just to look).
@@ -593,7 +614,7 @@ if [ "$MODE" = "prompt" ] && [ "$AGENT" = "cursor" ] && [ "$PRINT_EVENT" != "1" 
   printf '{"continue":true}\n'
 fi
 
-# ---- PostToolUse (Claude, `touch`): remember which tracked repo the agent edits ------------
+# ---- `touch` (Claude PostToolUse, Cursor afterFileEdit, OpenCode plugin): remember the edited repo
 # Foreground (Stop reads the record right after), silent, sends nothing. Only the edited file's
 # path is taken from the payload; nothing else of it is kept. Untracked repo or no repo: nothing
 # is written (the tracking cache aside, as in every mode). Kept cheap: no spool work here (the
@@ -601,7 +622,7 @@ fi
 touch_main() {
   local p dir parent i=0 f root
   umask 077
-  p="$(printf '%s' "$INPUT" | jq -r '.tool_input | objects | (.file_path // .notebook_path) | strings' 2>/dev/null | head -n 1)"
+  p="$(printf '%s' "$INPUT" | jq -r '[(.tool_input | objects | (.file_path // .notebook_path)), .file_path] | map(strings) | first // empty' 2>/dev/null | head -n 1)"
   INPUT=""; NORM=""
   [ -n "$p" ] || return 0
   p="${p//\\//}"
@@ -630,10 +651,11 @@ if [ "$MODE" = "touch" ]; then
 fi
 
 # SessionStart decides in the foreground (the rules must be printed now); the other events
-# decide in the background. Nothing to describe: stop here, send nothing, write no state.
+# decide in the background. Nothing to describe: stop here, send nothing, write no state (except the
+# content-free last-run marker, see mark_run).
 if [ "$MODE" = "start" ] && [ "$PRINT_EVENT" != "1" ]; then
-  if ! resolve_target; then ( umask 077; tidy_spool ) </dev/null >/dev/null 2>&1; exit 0; fi
-  ensure_session || exit 0
+  if ! resolve_target; then mark_run "$(untracked_reason)"; ( umask 077; tidy_spool ) </dev/null >/dev/null 2>&1; exit 0; fi
+  ensure_session || { mark_run no-session; exit 0; }
   print_rules
 fi
 
@@ -821,12 +843,12 @@ nawala_main() {
   umask 077
   tidy_spool # before the tracking check: old spooled prompts go away in any repo
   if [ "$MODE" != "start" ]; then # start already decided in the foreground
-    resolve_target || return 0
-    ensure_session || return 0
+    resolve_target || { mark_run "$(untracked_reason)"; return 0; }
+    ensure_session || { mark_run no-session; return 0; }
   fi
   mkdir -p "$NAWALA_DIR" "$NAWALA_DIR/state" 2>/dev/null || return 0
   DEDUPE_KEY="$(dedupe_key)"
-  claim_once || return 0
+  claim_once || { mark_run duplicate; return 0; }
   antigravity_new_prompt || return 0
   # housekeeping: forget dedupe keys older than a day (only our own <key>/ts entries)
   local d now; now="$(date +%s)"
@@ -870,11 +892,13 @@ nawala_main() {
   # 2) send this event; spool it if the server is unreachable
   local code
   code="$(printf '%s' "$event" | post)"
-  retryable "$code" && spool_append "$event"
+  if retryable "$code"; then spool_append "$event"; mark_run "spooled:${code:-000}"; else mark_run "sent:$code"; fi
   cleanup_auth
   return 0
 }
 
+# Foreground marker: if the agent kills the background job, the doctor shows "started" instead of an outcome.
+mark_run started
 if [ "${NAWALA_HOOK_SYNC:-0}" = "1" ]; then
   ( nawala_main ) </dev/null >/dev/null 2>&1
 else

@@ -6,6 +6,8 @@ Snippets `install.sh` merges into each agent's user config. Placeholders, filled
 - `__NAWALA_AUTH__`: `Bearer <token>` (JSON: the whole string value; TOML: inside the quotes)
 - `__NAWALA_URL__`: the server URL (instruction text only)
 - `__NAWALA_HOOK__`: absolute path of `~/.nawala/hook.sh`
+- `__NAWALA_HOOK_JSON__` / `__NAWALA_BASH_JSON__` (JavaScript, `opencode/plugin.js`): the hook path
+  and, on Windows (Git Bash), the `bash.exe` the installer ran under, as JSON strings ("" elsewhere)
 
 JSON fragments are merged with `jq` (other entries kept). TOML fragments are appended between
 `# nawala:start` / `# nawala:end`. Markdown blocks go between `<!-- nawala:start -->` /
@@ -28,6 +30,7 @@ JSON fragments are merged with `jq` (other entries kept). TOML fragments are app
 - `cursor/mcp.json` -> `~/.cursor/mcp.json` at `mcpServers.nawala`. Verified (`url`, `headers`).
 - `cursor/hooks.json` -> `~/.cursor/hooks.json` (`version: 1`, flat `{command, timeout}` entries).
   Verified. `sessionStart` output: `additional_context`; `beforeSubmitPrompt` answers `{"continue":true}`.
+  `afterFileEdit` (5 s) runs `hook.sh touch`: it reads only the top-level `file_path` (hook v0.1.4+).
 
 ## kiro
 - `kiro/mcp.json` -> `~/.kiro/settings/mcp.json` at `mcpServers.nawala`. Verified (`url`, `headers`;
@@ -43,7 +46,15 @@ JSON fragments are merged with `jq` (other entries kept). TOML fragments are app
 
 ## opencode
 - `opencode/mcp.json` -> `~/.config/opencode/opencode.json` at `mcp.servers.nawala`. Verified against
-  the current schema (`type: remote`, `headers`, `oauth`; no `enabled` key). No plugin is shipped.
+  the current schema (`type: remote`, `headers`, `oauth`; no `enabled` key). Checked on 2.3.0.
+- `opencode/plugin.js` -> `~/.config/opencode/plugins/nawala.js` (whole file), OpenCode 2.x only
+  (`opencode --version`, run with a throw-away HOME). OpenCode 2 plugin API (`export default {id,
+  setup(ctx)}`), verified on 2.3.0: `session.hook("prompt")` -> prompt (first one also -> start),
+  events `session.execution.succeeded|failed|interrupted` -> stop, `session.created` -> start,
+  `session.deleted` -> end, `tool.hook("execute.after")` for write/edit/apply_patch -> touch. It
+  starts `hook.sh` with `{sessionID, directory, model, prompt_id | turn_id | tool_input.file_path}` on
+  stdin; never the prompt text. Limitation: `opencode run --standalone` exits right after the turn,
+  so its final stop may be lost (the TUI, desktop app and background service are not affected).
 - `instructions.md` -> block in `~/.config/opencode/AGENTS.md`.
 
 ## grok (Grok Build, xAI)

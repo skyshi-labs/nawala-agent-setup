@@ -92,7 +92,7 @@ OpenCode runs shell commands without asking, so you must not run step 5 before I
 3. Run `bash /tmp/nawala-install.sh --agent opencode --url {{URL}} --dry-run`, show me the output, and summarise every file change and network call.
 4. Wait until I reply "yes". Do nothing else until then.
 5. Run `NAWALA_TOKEN={{TOKEN}} bash /tmp/nawala-install.sh --agent opencode --url {{URL}} --yes`. Never echo the token.
-6. Run `opencode mcp list` and confirm `nawala` is listed. Note: if I use opencode.jsonc, the installer stops and I add the server by hand.
+6. Run `opencode mcp list` and confirm `nawala` is listed. Tell me to restart OpenCode (and run `opencode service restart` if the background service runs) so the Nawala plugin loads. Note: if I use opencode.jsonc, the installer stops and I add the server by hand.
 ```
 
 ## Grok Build (xAI)

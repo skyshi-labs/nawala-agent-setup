@@ -285,9 +285,10 @@ test_claude_posttooluse_hook_is_merged_and_removed() {
     "Edit|Write|MultiEdit|NotebookEdit	5	true" "PostToolUse entry"
   assert_eq "$(json_get "$HOME/.claude/settings.json" '.hooks.PostToolUse[0].hooks[0].command')" "~/bin/fmt.sh" "user PostToolUse hook lost"
   assert_eq "$(json_get "$HOME/.claude/settings.json" '.hooks.PreToolUse[0].hooks[0].command')" "~/bin/guard.sh"
-  # other agents do not get a touch hook
+  # codex and grok do not get a touch hook; cursor gets one on afterFileEdit (hook v0.1.4)
   install_sh --agent codex,cursor,grok --url "$URL" --yes
-  assert_eq "$(cat "$HOME/.codex/hooks.json" "$HOME/.cursor/hooks.json" "$HOME/.grok/hooks/nawala.json" | grep -c 'touch --agent' || true)" "0"
+  assert_eq "$(cat "$HOME/.codex/hooks.json" "$HOME/.grok/hooks/nawala.json" | grep -c 'touch --agent' || true)" "0"
+  assert_eq "$(json_get "$HOME/.cursor/hooks.json" '[.hooks.afterFileEdit[] | select(.command | endswith("hook.sh touch --agent cursor"))] | length')" "1" "cursor afterFileEdit"
   install_sh --uninstall --yes
   assert_same_tree "$before" "$(snapshot)" "uninstall did not restore the PostToolUse hooks"
   # an install made before v0.1.3 (no PostToolUse entry) gets it by re-running the installer
@@ -298,4 +299,64 @@ test_claude_posttooluse_hook_is_merged_and_removed() {
   assert_eq "$(json_get "$HOME/.claude/settings.json" '[.hooks.PostToolUse[].hooks[].command | select(test("touch --agent claude"))] | length')" "1" "re-run did not add PostToolUse"
   install_sh --uninstall --yes
   [ ! -e "$HOME/.claude/settings.json" ] || assert_eq "$(json_get "$HOME/.claude/settings.json" '[.. | .command? // empty | select(test("nawala"))] | length')" "0"
+}
+
+# v0.1.4: OpenCode 2.x gets the Nawala plugin (templates/opencode/plugin.js); older or unknown
+# versions keep the MCP + AGENTS.md setup. On Windows the plugin starts hook.sh through Git Bash.
+test_opencode_plugin_follows_the_installed_version() {
+  local before p="$HOME/.config/opencode/plugins/nawala.js"
+  new_home
+  before="$(snapshot)"
+  p="$HOME/.config/opencode/plugins/nawala.js"
+  NAWALA_OPENCODE_VERSION="opencode v2.3.2" install_sh --agent opencode --url "$URL" --yes
+  [ -f "$p" ] || fail "no plugin for OpenCode 2.3.2"
+  assert_contains "$(cat "$p")" "const HOOK = \"$HOME/.nawala/hook.sh\""
+  assert_contains "$(cat "$p")" 'const BASH = ""' "no bash.exe on macOS/Linux"
+  assert_not_contains "$(cat "$p")" "__NAWALA_" "placeholder left in the plugin"
+  assert_not_contains "$(cat "$p")" "$TOKEN" "token in the plugin"
+  # idempotent, and uninstall removes it
+  NAWALA_OPENCODE_VERSION=2.3.2 install_sh --agent opencode --url "$URL" --yes
+  assert_contains "$OUT" "No file changes needed" "re-install changed something"
+  install_sh --uninstall --yes
+  assert_same_tree "$before" "$(snapshot)" "uninstall left the plugin"
+  # OpenCode 1.x: MCP + AGENTS.md only, with a note
+  NAWALA_OPENCODE_VERSION=1.18.29 install_sh --agent opencode --url "$URL" --yes
+  [ ! -e "$p" ] || fail "plugin installed for OpenCode 1.x"
+  assert_contains "$OUT" "needs OpenCode 2.x"
+  install_sh --uninstall --yes
+  # Windows (Git Bash): the plugin runs hook.sh through bash.exe
+  NAWALA_TEST_UNAME=MINGW64_NT-10.0 NAWALA_OPENCODE_VERSION=2.3.0 install_sh --agent opencode --url "$URL" --yes
+  assert_contains "$(cat "$p")" "const BASH = \"$BASH\""
+  install_sh --uninstall --yes
+  assert_same_tree "$before" "$(snapshot)"
+}
+
+# v0.1.4: --doctor is read-only, flags an outdated hook.sh, and explains each agent's last hook run.
+test_doctor_is_read_only_and_explains_the_last_run() {
+  local before
+  new_home
+  install_sh --agent claude,cursor,kiro --url "$URL" --yes
+  mkdir -p "$HOME/.nawala/state"
+  printf '%s stop untracked 0.1.4\n' "$(date +%s)" >"$HOME/.nawala/state/last-run-cursor"
+  : >"$FAKE_CURL_LOG"
+  before="$(snapshot)"
+  install_sh --doctor
+  assert_eq "$?" "0"
+  assert_same_tree "$before" "$(snapshot)" "--doctor changed files"
+  assert_contains "$OUT" "(current)"
+  assert_contains "$OUT" "cursor: hooks registered"
+  assert_contains "$OUT" "stop -> untracked"
+  assert_contains "$OUT" "claude: hooks registered"
+  assert_contains "$OUT" "last run: none recorded"
+  assert_contains "$OUT" "kiro: no hooks for this agent"
+  assert_contains "$OUT" "Server: token ok"
+  assert_not_contains "$OUT" "$TOKEN" "token printed"
+  assert_eq "$(grep -c . "$FAKE_CURL_LOG")" "1" "doctor network calls"
+  assert_contains "$(cat "$FAKE_CURL_LOG")" "/api/auth/me"
+  assert_not_contains "$(cat "$FAKE_CURL_LOG")" "/v1/tracking" "doctor must not mark the hook as seen"
+  # an old hook.sh is flagged
+  sed -i.bak 's/^NAWALA_HOOK_VERSION=.*/NAWALA_HOOK_VERSION="0.1.2"/' "$HOME/.nawala/hook.sh" && rm -f "$HOME/.nawala/hook.sh.bak"
+  install_sh --doctor
+  assert_contains "$OUT" "v0.1.2 OUTDATED"
+  install_sh --uninstall --yes
 }

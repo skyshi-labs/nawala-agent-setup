@@ -2,5 +2,6 @@
   "beforeSubmitPrompt": [{ "command": "__NAWALA_HOOK__ prompt --agent cursor", "timeout": 10 }],
   "stop": [{ "command": "__NAWALA_HOOK__ stop --agent cursor", "timeout": 10 }],
   "sessionStart": [{ "command": "__NAWALA_HOOK__ start --agent cursor", "timeout": 10 }],
-  "sessionEnd": [{ "command": "__NAWALA_HOOK__ end --agent cursor", "timeout": 10 }]
+  "sessionEnd": [{ "command": "__NAWALA_HOOK__ end --agent cursor", "timeout": 10 }],
+  "afterFileEdit": [{ "command": "__NAWALA_HOOK__ touch --agent cursor", "timeout": 5 }]
 }
