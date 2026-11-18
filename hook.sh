@@ -108,7 +108,7 @@ fi
 URL="${NAWALA_URL:-$URL}"; URL="${URL%/}"
 TOKEN="${NAWALA_TOKEN:-$TOKEN}"
 if [ "$PRINT_EVENT" != "1" ]; then
-  [ -n "$TOKEN" ] && [ -n "$URL" ] || { mark_run no-config; exit 0; }
+  if [ -z "$TOKEN" ] || [ -z "$URL" ]; then mark_run no-config; exit 0; fi
 fi
 
 # ---- helpers ------------------------------------------------------------------------------
