@@ -34,16 +34,39 @@ what is sent and how to verify a release.
 
 ## Install (one command, in your terminal)
 
-Take `VERSION` and the `install.sh` SHA-256 from the [latest release](https://github.com/skyshi-labs/nawala-agent-setup/releases/latest) notes:
+Take `VERSION` and the `install.sh` SHA-256 from the [latest release](https://github.com/skyshi-labs/nawala-agent-setup/releases/latest)
+notes (the values below are v0.1.4). Pick your operating system:
+
+**macOS** (Terminal or iTerm; `shasum` is preinstalled):
 
 ```sh
-VERSION=v0.1.3 SHA256=<sha256 of install.sh from the release notes>
+VERSION=v0.1.4 SHA256=8e47b6682355d06215d451cc3f08b6c9859cbb2bf684dc4033cdf75d515c3adb
 curl -fsSLo nawala-install.sh "https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION/install.sh" \
   && echo "$SHA256  nawala-install.sh" | shasum -a 256 -c - \
   && bash nawala-install.sh --agent claude --url https://nawala.skyshi.com
 ```
 
-(`shasum` is preinstalled on macOS; on Linux use `sha256sum -c -` instead.)
+**Linux** (bash or zsh; `sha256sum` comes with coreutils):
+
+```sh
+VERSION=v0.1.4 SHA256=8e47b6682355d06215d451cc3f08b6c9859cbb2bf684dc4033cdf75d515c3adb
+curl -fsSLo nawala-install.sh "https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION/install.sh" \
+  && echo "$SHA256  nawala-install.sh" | sha256sum -c - \
+  && bash nawala-install.sh --agent claude --url https://nawala.skyshi.com
+```
+
+**Windows** (Git Bash from [Git for Windows](https://gitforwindows.org), not PowerShell or CMD; install `jq` first,
+e.g. `winget install jqlang.jq`, then reopen Git Bash):
+
+```sh
+VERSION=v0.1.4 SHA256=8e47b6682355d06215d451cc3f08b6c9859cbb2bf684dc4033cdf75d515c3adb
+curl -fsSLo nawala-install.sh "https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION/install.sh" \
+  && echo "$SHA256  nawala-install.sh" | sha256sum -c - \
+  && bash nawala-install.sh --agent claude --url https://nawala.skyshi.com
+```
+
+On Windows `~/.nawala` is `C:\Users\<you>\.nawala`. The installer remembers this Git Bash, so the OpenCode plugin can run
+`hook.sh` through it.
 
 The installer prints every file it will create or modify (unified diff, token masked) and every
 network call, then asks `Apply these changes? [y/N]`. It asks for your token with hidden input
@@ -52,7 +75,68 @@ network call, then asks `Apply these changes? [y/N]`. It asks for your token wit
 - Several agents: `--agent claude,codex,cursor`; everything installed on this machine: `--agent all-detected`.
 - Look first, change nothing: add `--dry-run`.
 - Staging: `--url https://nawala.project.skyshi.io`.
-- Requirements: macOS or Linux, `bash`, `curl`, `jq`. Never run it with `sudo` (it refuses root).
+- Requirements: macOS, Linux, or Windows with Git Bash; `bash`, `curl`, `jq`. Never run it with `sudo` (it refuses root).
+
+## Update to a new release
+
+No new token is needed: the installer is run again for the agents already installed, with the token and agent list
+from `~/.nawala/config`. The same steps, with the current version filled in, are at
+<https://nawala.skyshi.com/guide/update>; the dashboard and your agent tell you when your version is behind.
+
+**Recommended: let your agent do it.** Paste this prompt into your agent (Claude Code, Cursor, Codex, OpenCode, ...);
+on Windows the agent must run commands in Git Bash:
+
+```text
+Update Nawala agent-setup on this machine to v0.1.4. Stop at the first step that fails.
+1. Run `grep '^NAWALA_HOOK_VERSION=' ~/.nawala/hook.sh` and `grep -E '^NAWALA_(URL|AGENTS)=' ~/.nawala/config` and show me the output. If ~/.nawala/config does not exist, stop and tell me to follow https://nawala.skyshi.com/guide instead.
+2. curl -fsSLo /tmp/nawala-install.sh https://github.com/skyshi-labs/nawala-agent-setup/releases/download/v0.1.4/install.sh (never pipe it into a shell)
+3. Check `shasum -a 256 /tmp/nawala-install.sh` (or sha256sum) equals 8e47b6682355d06215d451cc3f08b6c9859cbb2bf684dc4033cdf75d515c3adb. If not, delete the file and stop.
+4. Run `NAWALA_TOKEN="$(sed -n 's/^NAWALA_TOKEN=//p' ~/.nawala/config | tail -n 1)" bash /tmp/nawala-install.sh --url https://nawala.skyshi.com --agent "$(sed -n 's/^NAWALA_AGENTS=//p' ~/.nawala/config | tail -n 1)" --dry-run`, show me the output, and summarise every file change and network call.
+5. Wait until I reply "yes". Do nothing else until then.
+6. Run the same command with --yes instead of --dry-run. Never print the token or the whole ~/.nawala/config.
+7. Run `bash /tmp/nawala-install.sh --doctor` and show me the result: hook.sh must be v0.1.4. Then tell me to restart this agent (and resume this chat) so the new hooks load.
+```
+
+**Or manually.** The installer shows the diff and asks `Apply these changes? [y/N]`: answer `y`.
+
+macOS (Terminal or iTerm):
+
+```sh
+grep '^NAWALA_HOOK_VERSION=' ~/.nawala/hook.sh      # older than the release? update
+VERSION=v0.1.4 SHA256=8e47b6682355d06215d451cc3f08b6c9859cbb2bf684dc4033cdf75d515c3adb
+curl -fsSLo /tmp/nawala-install.sh "https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION/install.sh" \
+  && echo "$SHA256  /tmp/nawala-install.sh" | shasum -a 256 -c - \
+  && NAWALA_TOKEN="$(sed -n 's/^NAWALA_TOKEN=//p' ~/.nawala/config | tail -n 1)" \
+     bash /tmp/nawala-install.sh --url https://nawala.skyshi.com --agent "$(sed -n 's/^NAWALA_AGENTS=//p' ~/.nawala/config | tail -n 1)"
+bash /tmp/nawala-install.sh --doctor                # hook.sh must show the new version
+```
+
+Linux (bash or zsh):
+
+```sh
+grep '^NAWALA_HOOK_VERSION=' ~/.nawala/hook.sh      # older than the release? update
+VERSION=v0.1.4 SHA256=8e47b6682355d06215d451cc3f08b6c9859cbb2bf684dc4033cdf75d515c3adb
+curl -fsSLo /tmp/nawala-install.sh "https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION/install.sh" \
+  && echo "$SHA256  /tmp/nawala-install.sh" | sha256sum -c - \
+  && NAWALA_TOKEN="$(sed -n 's/^NAWALA_TOKEN=//p' ~/.nawala/config | tail -n 1)" \
+     bash /tmp/nawala-install.sh --url https://nawala.skyshi.com --agent "$(sed -n 's/^NAWALA_AGENTS=//p' ~/.nawala/config | tail -n 1)"
+bash /tmp/nawala-install.sh --doctor                # hook.sh must show the new version
+```
+
+Windows (Git Bash, not PowerShell or CMD):
+
+```sh
+grep '^NAWALA_HOOK_VERSION=' ~/.nawala/hook.sh      # older than the release? update
+VERSION=v0.1.4 SHA256=8e47b6682355d06215d451cc3f08b6c9859cbb2bf684dc4033cdf75d515c3adb
+curl -fsSLo /tmp/nawala-install.sh "https://github.com/skyshi-labs/nawala-agent-setup/releases/download/$VERSION/install.sh" \
+  && echo "$SHA256  /tmp/nawala-install.sh" | sha256sum -c - \
+  && NAWALA_TOKEN="$(sed -n 's/^NAWALA_TOKEN=//p' ~/.nawala/config | tail -n 1)" \
+     bash /tmp/nawala-install.sh --url https://nawala.skyshi.com --agent "$(sed -n 's/^NAWALA_AGENTS=//p' ~/.nawala/config | tail -n 1)"
+bash /tmp/nawala-install.sh --doctor                # hook.sh must show the new version
+```
+
+Then restart your agents (and resume open chats). OpenCode: also `opencode service restart` if its background
+service runs. Codex: approve the hooks again with `/hooks` if asked.
 
 ## Install from inside your agent
 
